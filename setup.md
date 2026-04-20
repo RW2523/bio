@@ -64,17 +64,128 @@ python -m pip install -r requirements.txt
 
 ---
 
-## 4. WISDM dataset placement
+## 4. Download WISDM and place it on disk
 
-This repository **does not redistribute** WISDM raw files. You must obtain the dataset separately and point the code at it.
+This repository **does not ship** the WISDM files. Download them from the **UCI Machine Learning Repository** (official host for this release):
 
-### 4.1 Expected directory layout
+**Dataset page (ID 507):** [WISDM Smartphone and Smartwatch Activity and Biometrics Dataset](https://archive.ics.uci.edu/dataset/507/wisdm+smartphone+and+smartwatch+activity+and+biometrics+dataset)
 
-The code expects a folder (commonly named `wisdm-dataset`) containing at least:
+**Citation (use in papers / reports):** Weiss, G. (2019). *WISDM Smartphone and Smartwatch Activity and Biometrics Dataset* [Dataset]. UCI Machine Learning Repository. [https://doi.org/10.24432/C5HK59](https://doi.org/10.24432/C5HK59).  
+License: **CC BY 4.0** (see UCI page for details).
+
+### 4.1 Download the archive
+
+On the UCI page above, use **Download** to get **`wisdm-dataset.zip`** (~295 MB). That zip is what this project expects (it contains `raw/`, `activity_key.txt`, ARFF exports, etc.).
+
+> **Note:** UCI also documents `pip install ucimlrepo` and a Python `fetch_ucirepo(id=507)` API. That API is convenient for tabular views of the data, but **this codebase is built around the on-disk layout produced by unzipping `wisdm-dataset.zip`**. For training and preprocessing here, **download and unzip the zip** as below.
+
+### 4.2 Unzip and choose a folder layout
+
+After download, unzip **`wisdm-dataset.zip`**. You should get a directory named **`wisdm-dataset`** (or similar) whose **immediate** children include:
+
+- `activity_key.txt`
+- `raw/` (with `phone/`, `watch/`, etc.)
+- optionally `arff_files/`, PDFs, etc.
+
+**Sanity check:** this path must be the directory that **directly** contains `raw/`:
+
+```text
+<DATA_ROOT>/activity_key.txt
+<DATA_ROOT>/raw/phone/accel/data_1600_accel_phone.txt   # example
+```
+
+If your unzip tool created an extra top-level folder, move the inner `wisdm-dataset` so `DATA_ROOT/raw/...` exists as above.
+
+### 4.3 Where to put `wisdm-dataset` (recommended)
+
+**Option A — Sibling folder next to the repo (recommended)**  
+Keeps large data **outside** the git repo and matches the default config.
+
+```text
+your-workspace/
+  bio/                    # this repository (clone of RW2523/bio)
+  wisdm-dataset/          # unzipped UCI archive (NOT committed to git)
+    activity_key.txt
+    raw/
+    ...
+```
+
+Then in **`configs/data.yaml`** (default):
+
+```yaml
+data_root: "../wisdm-dataset"
+```
+
+From inside `bio/`, `../wisdm-dataset` resolves to the sibling folder.
+
+**Option B — Fixed location on your machine**
+
+Put `wisdm-dataset` anywhere, e.g.:
+
+```text
+/Users/you/Datasets/wisdm-dataset/
+```
+
+Set an **absolute** path in `configs/data.yaml`:
+
+```yaml
+data_root: "/Users/you/Datasets/wisdm-dataset"
+```
+
+**Option C — Inside the repo (optional)**
+
+```text
+bio/
+  external/
+    wisdm-dataset/
+      activity_key.txt
+      raw/
+      ...
+```
+
+```yaml
+data_root: "external/wisdm-dataset"
+```
+
+Add `external/` to **`.gitignore`** if you do this, so you do not accidentally commit gigabytes of sensor data.
+
+### 4.4 Point the code at your `DATA_ROOT`
+
+Edit **`configs/data.yaml`**:
+
+```yaml
+data_root: "../wisdm-dataset"   # or absolute path; must contain raw/ + activity_key.txt
+sensor_device: "phone"         # phone | watch
+sensor_modality: "accel"       # accel | gyro
+```
+
+- **`data_root`** is resolved **relative to the repository root** unless the path is absolute (`train/common.resolve_path` / `utils.paths`).
+- **`sensor_device` / `sensor_modality`** select which raw stream under `raw/<device>/<modality>/` is used.
+
+### 4.5 Verify the install
+
+From the repo root, with venv activated:
+
+```bash
+python data_tools/inspect_dataset.py --data_root ../wisdm-dataset --out_dir outputs/audit
+# If you used Option B/C, replace ../wisdm-dataset with your DATA_ROOT path
+```
+
+Open **`outputs/audit/DATASET_AUDIT_REPORT.txt`** and confirm raw file counts under `raw/phone/accel` (etc.) look reasonable. Then:
+
+```bash
+python data_tools/build_manifest.py --data_root ../wisdm-dataset --out_dir outputs/audit
+```
+
+If either command errors with “missing `raw/`” or “no `data_*.txt` files”, your **`data_root` is one level too high or too low** — adjust until `DATA_ROOT/raw/phone/accel` exists.
+
+### 4.6 Expected directory layout (reference)
 
 ```
 wisdm-dataset/
   activity_key.txt
+  README.txt
+  WISDM-dataset-description.pdf
   raw/
     phone/
       accel/*.txt
@@ -82,27 +193,9 @@ wisdm-dataset/
     watch/
       accel/*.txt
       gyro/*.txt
-  arff_files/          # optional for your audit; not used by default training pipeline
-    ...
-```
-
-### 4.2 Configure `data_root`
-
-Edit **`configs/data.yaml`**:
-
-```yaml
-data_root: "../wisdm-dataset"   # relative to repo root, OR use an absolute path
-sensor_device: "phone"         # phone | watch
-sensor_modality: "accel"       # accel | gyro
-```
-
-- **`data_root`** must resolve to the folder that **contains** `raw/` and `activity_key.txt`.
-- Paths in configs are resolved **relative to the repository root** when not absolute (see `train/common.resolve_path` / `utils.paths`).
-
-**Tip:** If your tree differs, run the audit script with an explicit `--data_root` first:
-
-```bash
-python data_tools/inspect_dataset.py --data_root /path/to/wisdm-dataset --out_dir outputs/audit
+  arff_files/          # present in UCI bundle; optional for this repo’s default pipeline
+    phone/
+    watch/
 ```
 
 ---
@@ -206,6 +299,7 @@ gh repo clone RW2523/bio
 |--------|----------------|-----|
 | `ModuleNotFoundError: yaml` | No venv / deps not installed | Activate `.venv` and `pip install -r requirements.txt` |
 | `FileNotFoundError` for `raw/.../accel` | Wrong `data_root` or wrong `sensor_device` / `sensor_modality` | Fix `configs/data.yaml`; rerun audit |
+| “Missing `raw/`” but zip is extracted | **Extra** top-level folder after unzip (`wisdm-dataset/wisdm-dataset/raw`) | Point `data_root` at the **inner** folder that directly contains `raw/` and `activity_key.txt` (see §4.2) |
 | `Empty test split` / split errors | Too few subjects after `max_subjects` / `debug_subjects` | Increase subjects or relax split logic in `data_tools/splits.py` |
 | SSL Case 2 cannot load weights | Missing SSL run or wrong `pretrained_backbone_path` | Run SSL first; path must point to `backbone_best.pt` or compatible checkpoint |
 | Very slow training | `compute_device: cpu` on large data | Use GPU, reduce `batch_size`, or use `debug` config |

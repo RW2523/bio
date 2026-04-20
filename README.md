@@ -14,7 +14,7 @@ This repository is a **modular research codebase** for **human activity recognit
    - **Case 1:** randomly initialized backbone, **fully frozen**, train linear head only.
    - **Case 2:** **AugPred-pretrained** backbone, **fully frozen**, train the same linear head only.
 
-For **installation, data layout, troubleshooting, and Git workflow**, see **[setup.md](setup.md)**.
+For **installation, UCI download/unzip, folder layout, `data_root`, troubleshooting, and Git workflow**, see **[setup.md](setup.md)** (especially **§4**).
 
 ---
 
@@ -44,6 +44,10 @@ Point `configs/data.yaml` → `data_root` at your extracted **`wisdm-dataset`** 
 | Evaluate | `python eval/evaluate.py --checkpoint outputs/checkpoints/case1/best.pt --output_dir outputs/eval_runs/case1` |
 
 ---
+
+## Obtaining WISDM
+
+Download the official archive from the **UCI Machine Learning Repository** ([dataset 507](https://archive.ics.uci.edu/dataset/507/wisdm+smartphone+and+smartwatch+activity+and+biometrics+dataset)), unzip to a folder that contains `raw/` and `activity_key.txt`, then set `data_root` in `configs/data.yaml`. Step-by-step paths and options are in **[setup.md §4](setup.md#4-download-wisdm-and-place-it-on-disk)**.
 
 ## What this repo expects from WISDM (discovered layout)
 
