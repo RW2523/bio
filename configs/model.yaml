@@ -1,0 +1,19 @@
+# Input layout for conv backbone: "BCT" => [B, C, T]
+input_layout: "BCT"
+
+# Inertial channels (accel xyz = 3; gyro xyz = 3)
+in_channels: 3
+
+# Spiking ResNet-1D (moderate default)
+base_channels: 32
+layers: [1, 1, 2]  # number of blocks per stage
+stem_kernel: 7
+
+# LIF / surrogate
+lif_beta: 0.9
+lif_threshold: 1.0
+lif_reset: "subtract" # subtract | zero
+surrogate_alpha: 2.0
+
+# Number of activity classes (filled from preprocessing artifacts when available)
+num_classes: 18

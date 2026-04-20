@@ -1,0 +1,33 @@
+inherits: "data.yaml"
+
+output_dir: "outputs"
+
+# Windowing (defaults requested)
+window_sec: 10.0
+stride_sec: 5.0
+
+# Documented WISDM rate; used when per-file inference is ambiguous.
+nominal_sample_rate_hz: 20.0
+
+# If true, infer median dt from timestamps (after sorting) and compare to nominal.
+infer_sample_rate: true
+
+# Relative drift tolerance vs nominal (e.g. 0.15 => accept 17–23 Hz band when nominal 20)
+sample_rate_tolerance: 0.15
+
+# Drop windows whose per-sample labels are not all identical
+drop_mixed_label_windows: true
+
+# Train/val/test subject fractions (subject-wise)
+train_frac: 0.7
+val_frac: 0.15
+# test_frac implied
+
+# Reproducible subject shuffle before split
+split_seed: 42
+
+# Disk cache for extracted windows (un-normalized xyz); normalization applied at load time
+cache_subdir: "cache/wisdm_windows"
+
+# Save label map and split lists here too
+artifacts_subdir: "artifacts"

@@ -1,0 +1,15 @@
+inherits: ["data.yaml", "preprocess.yaml", "model.yaml"]
+
+experiment_name: "case1_random_frozen_probe"
+
+epochs: 10
+batch_size: 64
+num_workers: 0
+lr: 0.05
+weight_decay: 0.0
+compute_device: "cpu"
+
+pretrained_backbone_path: null
+
+checkpoint_subdir: "checkpoints/case1"
+seed: 42

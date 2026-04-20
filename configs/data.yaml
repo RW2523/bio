@@ -1,0 +1,14 @@
+# Root folder that contains WISDM content (expects raw/, arff_files/, activity_key.txt under it or nested).
+# Point this at the extracted `wisdm-dataset` directory.
+data_root: "../wisdm-dataset"
+
+# Raw time-series live under: {data_root}/raw/{sensor_device}/{sensor_modality}/
+# NOTE: keep this separate from PyTorch `compute_device` to avoid YAML merge collisions.
+sensor_device: "phone"   # phone | watch
+sensor_modality: "accel" # accel | gyro
+
+# Optional: limit subjects for debug (null = all discovered subjects)
+max_subjects: null
+
+# If true, only use subjects listed in debug_subjects (when non-empty)
+debug_subjects: []

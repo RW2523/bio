@@ -1,0 +1,25 @@
+inherits: ["data.yaml", "preprocess.yaml", "model.yaml"]
+
+experiment_name: "augpred_ssl"
+
+epochs: 5
+batch_size: 32
+num_workers: 0
+lr: 0.001
+weight_decay: 0.0001
+compute_device: "cpu"
+
+# AugPred task hyperparameters
+perm_num_chunks: 8
+timewarp_sigma: 0.2
+timewarp_knots: 4
+
+# Weighted sampling uses per-window motion = mean RMS std over channels (pre-norm)
+motion_weight_power: 1.0
+motion_weight_eps: 1.0e-3
+
+# Validation fraction taken from train subjects (subject-held-out windows handled via split files)
+# Here: use val split subjects only for SSL val curve (no leakage)
+use_split: "train" # SSL pretraining uses train subjects only; val uses val subjects
+
+seed: 42

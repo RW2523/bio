@@ -1,0 +1,16 @@
+outputs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
+*.pt
+*.pth
+*.npz
+wandb/

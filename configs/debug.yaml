@@ -1,0 +1,12 @@
+inherits: ["data.yaml", "preprocess.yaml", "model.yaml", "ssl.yaml"]
+
+# Tiny run: few subjects, few epochs
+max_subjects: 3
+debug_subjects: []
+
+epochs: 1
+batch_size: 8
+compute_device: "cpu"
+
+# For quick end-to-end checks, point case2-style runs at the SSL backbone checkpoint.
+pretrained_backbone_path: "outputs/checkpoints/ssl/backbone_best.pt"
