@@ -27,3 +27,15 @@ def assert_label_range(labels: torch.Tensor, num_classes: int) -> None:
         return
     if int(labels.min()) < 0 or int(labels.max()) >= num_classes:
         raise AssertionError(f"Label out of range: min={int(labels.min())} max={int(labels.max())} C={num_classes}")
+
+
+def assert_backbone_no_stored_gradients(backbone: nn.Module) -> None:
+    """
+    After `loss.backward()`, backbone parameters should not hold non-zero `.grad`
+    when the backbone was excluded from the autograd path (frozen linear probe).
+    """
+    for name, p in backbone.named_parameters():
+        if p.grad is None:
+            continue
+        if torch.isfinite(p.grad).all() and float(p.grad.detach().abs().sum()) > 0.0:
+            raise AssertionError(f"Backbone parameter {name!r} received non-zero gradients during frozen probing.")

@@ -29,19 +29,66 @@ python3 -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\act
 python -m pip install -r requirements.txt
 ```
 
-Point `configs/data.yaml` → `data_root` at your extracted **`wisdm-dataset`** directory (see setup.md). Then run the pipeline from the repo root:
+Point `configs/data.yaml` → `data_root` at your extracted **`wisdm-dataset`** directory (see setup.md). Then run the pipeline from the repo root.
+
+**Requirement audit / verification log:** [VERIFY_REPORT.md](VERIFY_REPORT.md)
+
+### Debug quickstart (smoke tests, small data)
+
+Run this first after install to validate imports, surrogate gradients, spiking forward pass, and probe guards:
+
+```bash
+python verify/smoke_e2e.py
+python data_tools/preprocess_wisdm.py --config debug
+python train/pretrain_augpred.py --config debug
+python train/train_linear_probe_case1.py --config debug
+python train/train_linear_probe_case2.py --config debug
+python eval/evaluate.py --checkpoint outputs/checkpoints/case1/best.pt --output_dir outputs/eval_runs/case1_debug
+python eval/evaluate.py --checkpoint outputs/checkpoints/case2/best.pt --output_dir outputs/eval_runs/case2_debug
+```
+
+### Exact command order (full / production settings)
+
+Run **in this order** (replace `<path/to/wisdm-dataset>` if your layout differs from `../wisdm-dataset` in `configs/data.yaml`):
+
+1. **Dataset audit**  
+   `python data_tools/inspect_dataset.py --data_root <path/to/wisdm-dataset> --out_dir outputs/audit`
+
+2. **Manifest**  
+   `python data_tools/build_manifest.py --data_root <path/to/wisdm-dataset> --out_dir outputs/audit`
+
+3. **Preprocess** (window cache + splits + train-only normalization)  
+   `python data_tools/preprocess_wisdm.py --config preprocess`
+
+4. **SSL pretraining (AugPred)**  
+   `python train/pretrain_augpred.py --config ssl`
+
+5. **Case 1 — random frozen backbone + linear probe**  
+   `python train/train_linear_probe_case1.py --config case1_probe`
+
+6. **Case 2 — SSL-pretrained frozen backbone + linear probe**  
+   `python train/train_linear_probe_case2.py --config case2_probe`  
+   (Ensure `pretrained_backbone_path` in `configs/case2_probe.yaml` points at `outputs/checkpoints/ssl/backbone_best.pt` after step 4.)
+
+7. **Evaluate** (writes `metrics.json`, `metrics_summary.csv`, `classification_report.txt`, `confusion_matrix.png`)  
+   `python eval/evaluate.py --checkpoint outputs/checkpoints/case1/best.pt --output_dir outputs/eval_runs/case1`  
+   `python eval/evaluate.py --checkpoint outputs/checkpoints/case2/best.pt --output_dir outputs/eval_runs/case2`
+
+**Optional:** `python data_tools/report_dataset_stats.py --artifacts_dir outputs/artifacts`
+
+### Command cheat sheet (same as above, compact)
 
 | Step | Command |
 |------|---------|
-| Audit + manifest | `python data_tools/inspect_dataset.py --data_root <path/to/wisdm-dataset> --out_dir outputs/audit` |
-| | `python data_tools/build_manifest.py --data_root <path/to/wisdm-dataset> --out_dir outputs/audit` |
+| Audit | `python data_tools/inspect_dataset.py --data_root <path/to/wisdm-dataset> --out_dir outputs/audit` |
+| Manifest | `python data_tools/build_manifest.py --data_root <path/to/wisdm-dataset> --out_dir outputs/audit` |
 | Preprocess (full) | `python data_tools/preprocess_wisdm.py --config preprocess` |
 | Preprocess (smoke) | `python data_tools/preprocess_wisdm.py --config debug` |
 | Dataset stats | `python data_tools/report_dataset_stats.py --artifacts_dir outputs/artifacts` |
 | SSL pretrain | `python train/pretrain_augpred.py --config ssl` |
 | Case 1 probe | `python train/train_linear_probe_case1.py --config case1_probe` |
 | Case 2 probe | `python train/train_linear_probe_case2.py --config case2_probe` |
-| Evaluate | `python eval/evaluate.py --checkpoint outputs/checkpoints/case1/best.pt --output_dir outputs/eval_runs/case1` |
+| Evaluate | `python eval/evaluate.py --checkpoint outputs/checkpoints/case1/best.pt --output_dir outputs/eval_runs/case1` (and same for case2) |
 
 ---
 
@@ -76,6 +123,7 @@ Typical WISDM tree:
 | `models/` | Surrogate spike, LIF over time, spiking ResNet-1D, SSL heads, linear probe |
 | `train/` | `pretrain_augpred.py`, `train_linear_probe_case1.py`, `train_linear_probe_case2.py`, `common.py` |
 | `eval/` | Metrics, confusion matrix figure, `evaluate.py`, `extract_features.py`, `visualize_embeddings.py` |
+| `verify/` | `smoke_e2e.py` — static + small tensor checks before long runs |
 | `utils/` | Seeds, logging, checkpoints, YAML merge, assertions |
 
 Generated artifacts (`outputs/`, `.venv/`, `*.pt`, `*.npz`) are **gitignored** — reproduce locally after clone.

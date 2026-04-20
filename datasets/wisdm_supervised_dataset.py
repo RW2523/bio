@@ -32,12 +32,26 @@ class WISDMSupervisedDataset(Dataset):
         self.std = std.astype(np.float32, copy=False)
 
         parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        expected_c = int(mean.shape[0])
+        t_ref: int | None = None
         for sid in subject_ids:
             p = self.cache_dir / f"subject_{sid}.npz"
             if not p.exists():
                 raise FileNotFoundError(f"Missing cached windows for subject {sid}: {p}")
             z = np.load(p)
-            parts.append((z["X"], z["y"], z["motion"]))
+            for key in ("X", "y", "motion"):
+                if key not in z:
+                    raise KeyError(f"{p} missing key {key!r}")
+            X, y, motion = z["X"], z["y"], z["motion"]
+            if X.ndim != 3 or X.shape[2] != expected_c:
+                raise ValueError(f"{p}: expected X [N,T,{expected_c}], got {X.shape}")
+            if t_ref is None:
+                t_ref = int(X.shape[1])
+            elif int(X.shape[1]) != t_ref:
+                raise ValueError(f"{p}: time length {X.shape[1]} != reference {t_ref}")
+            if y.shape[0] != X.shape[0] or motion.shape[0] != X.shape[0]:
+                raise ValueError(f"{p}: length mismatch X={X.shape[0]} y={y.shape[0]} motion={motion.shape[0]}")
+            parts.append((X, y, motion))
 
         lengths = np.array([p[0].shape[0] for p in parts], dtype=np.int64)
         self.cumlen = np.concatenate([[0], np.cumsum(lengths)])

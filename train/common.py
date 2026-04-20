@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+from torch.optim import Optimizer
 
 from utils.io import read_json
 from utils.paths import project_root
@@ -37,8 +38,29 @@ def load_label_map(artifacts_dir: Path) -> dict[str, Any]:
     return read_json(artifacts_dir / "label_map.json")
 
 
-def load_splits(artifacts_dir: Path) -> dict[str, list[int]]:
+def load_splits(artifacts_dir: Path) -> dict[str, Any]:
+    """Load `splits.json` (contains `train`/`val`/`test` lists and optional `split_seed`)."""
     return read_json(artifacts_dir / "splits.json")
+
+
+def subject_split_ids(splits: dict[str, Any]) -> tuple[list[int], list[int], list[int]]:
+    """Return train/val/test subject id lists; raises if keys missing or malformed."""
+    try:
+        train = [int(x) for x in splits["train"]]
+        val = [int(x) for x in splits["val"]]
+        test = [int(x) for x in splits["test"]]
+    except KeyError as e:
+        raise KeyError("splits.json must contain train, val, and test lists") from e
+    return train, val, test
+
+
+def assert_optimizer_excludes_module(optimizer: Optimizer, module: nn.Module) -> None:
+    """Ensure no parameters from `module` are optimized (linear probe must not update backbone)."""
+    excluded = {id(p) for p in module.parameters()}
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            if id(p) in excluded:
+                raise AssertionError("Optimizer must not include backbone parameters during linear probing.")
 
 
 def to_bct(x_btc: torch.Tensor) -> torch.Tensor:

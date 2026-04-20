@@ -21,7 +21,9 @@ from eval.confusion_matrix import save_confusion_matrix_figure
 from eval.metrics import compute_metrics
 from models.linear_probe import LinearProbeHead
 from models.spiking_resnet1d import SpikingResNet1d
-from train.common import freeze_module, load_label_map, load_norm_stats, load_splits, to_bct
+from sklearn.metrics import classification_report
+
+from train.common import freeze_module, load_label_map, load_norm_stats, load_splits, subject_split_ids, to_bct
 from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets
 from utils.checkpoint import load_checkpoint
 from utils.io import write_json
@@ -73,9 +75,7 @@ def main() -> None:
         raise FileNotFoundError(f"Missing window cache directory: {cache_dir}. Run preprocessing first.")
 
     splits = load_splits(art_dir)
-    train_ids = [int(x) for x in splits["train"]]
-    val_ids = [int(x) for x in splits["val"]]
-    test_ids = [int(x) for x in splits["test"]]
+    train_ids, val_ids, test_ids = subject_split_ids(splits)
     assert_disjoint_subject_sets(train_ids, val_ids, test_ids)
 
     label_map = load_label_map(art_dir)
@@ -139,6 +139,16 @@ def main() -> None:
 
     metrics = compute_metrics(y_true, y_pred, labels=labels)
     write_json(out_dir / "metrics.json", metrics)
+
+    report_txt = classification_report(
+        y_true,
+        y_pred,
+        labels=labels,
+        target_names=class_names,
+        digits=4,
+        zero_division=0,
+    )
+    (out_dir / "classification_report.txt").write_text(report_txt, encoding="utf-8")
 
     row = {
         "macro_f1": metrics["macro_f1"],

@@ -18,6 +18,7 @@ from data_tools.normalization import compute_channel_mean_std
 from data_tools.parsers import infer_sample_rate_hz, load_activity_key, load_raw_timeseries, parse_raw_filename
 from data_tools.splits import split_subjects
 from data_tools.windowing import make_windows, map_activity_codes_to_indices
+from utils.assertions import assert_disjoint_subject_sets
 from utils.io import write_json
 from utils.logger import setup_logger
 from utils.paths import project_root
@@ -105,6 +106,7 @@ def main() -> None:
         val_frac=float(cfg["val_frac"]),
         seed=int(cfg["split_seed"]),
     )
+    assert_disjoint_subject_sets(train_s, val_s, test_s)
 
     logger.info("Device/modality: %s/%s | subjects=%d | window=%ds stride=%ds (%d/%d samples @%.2fHz)", device, modality, len(subjects), window_sec, stride_sec, window_samples, stride_samples, nominal_hz)
     logger.info("Split counts train/val/test: %d/%d/%d", len(train_s), len(val_s), len(test_s))
@@ -152,6 +154,11 @@ def main() -> None:
             continue
 
         y = map_activity_codes_to_indices(y_codes, code_to_index)
+        if X.shape[0] > 0:
+            if X.shape[1] != window_samples or X.shape[2] != 3:
+                raise AssertionError(f"Unexpected window shape {X.shape}; expected (*,{window_samples},3) for xyz streams.")
+            if int(y.min()) < 0 or int(y.max()) >= num_classes:
+                raise AssertionError(f"Mapped labels out of range for {fp.name}")
 
         out_npz = cache_dir / f"subject_{sid}.npz"
         np.savez_compressed(
@@ -176,6 +183,8 @@ def main() -> None:
     if not train_X_parts:
         raise RuntimeError("No training windows found to compute normalization stats.")
     X_train = np.concatenate(train_X_parts, axis=0)
+    if X_train.ndim != 3 or X_train.shape[2] != 3:
+        raise AssertionError(f"Train window tensor has wrong shape {X_train.shape}")
     mean, std = compute_channel_mean_std(X_train)
     norm_stats = {
         "mean": mean.tolist(),

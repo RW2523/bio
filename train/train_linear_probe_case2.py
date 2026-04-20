@@ -19,6 +19,7 @@ from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
 from models.linear_probe import LinearProbeHead
 from models.spiking_resnet1d import SpikingResNet1d
 from train.common import (
+    assert_optimizer_excludes_module,
     freeze_module,
     load_label_map,
     load_norm_stats,
@@ -26,9 +27,10 @@ from train.common import (
     log_module_trainable,
     make_loader,
     resolve_path,
+    subject_split_ids,
     to_bct,
 )
-from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets, assert_label_range
+from utils.assertions import assert_backbone_frozen, assert_backbone_no_stored_gradients, assert_disjoint_subject_sets, assert_label_range
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.io import read_json, write_json
 from utils.logger import setup_logger
@@ -70,9 +72,7 @@ def main() -> None:
         raise FileNotFoundError(f"Missing pretrained backbone checkpoint: {bb_path}")
 
     splits = load_splits(art_dir)
-    train_ids = [int(x) for x in splits["train"]]
-    val_ids = [int(x) for x in splits["val"]]
-    test_ids = [int(x) for x in splits["test"]]
+    train_ids, val_ids, test_ids = subject_split_ids(splits)
     assert_disjoint_subject_sets(train_ids, val_ids, test_ids)
 
     label_map = load_label_map(art_dir)
@@ -129,6 +129,7 @@ def main() -> None:
     log_module_trainable(logger, "head", head)
 
     opt = torch.optim.SGD(head.parameters(), lr=float(cfg["lr"]), momentum=0.9, weight_decay=float(cfg.get("weight_decay", 0.0)))
+    assert_optimizer_excludes_module(opt, backbone)
     crit = nn.CrossEntropyLoss()
 
     best_val = float("inf")
@@ -156,6 +157,7 @@ def main() -> None:
         return tot / max(n, 1), correct / max(count, 1)
 
     epochs = int(cfg["epochs"])
+    probe_grad_checked = False
     for epoch in range(1, epochs + 1):
         backbone.eval()
         head.train()
@@ -171,6 +173,11 @@ def main() -> None:
             logits = head(z)
             loss = crit(logits, y)
             loss.backward()
+            if not probe_grad_checked:
+                assert_backbone_no_stored_gradients(backbone)
+                if not any(p.grad is not None and float(p.grad.detach().abs().sum()) > 0.0 for p in head.parameters()):
+                    raise AssertionError("Expected non-zero gradients on linear probe parameters.")
+                probe_grad_checked = True
             opt.step()
             total += float(loss.detach().cpu())
             m += 1

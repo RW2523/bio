@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,6 +26,7 @@ from train.common import (
     log_module_trainable,
     make_loader,
     resolve_path,
+    subject_split_ids,
     to_bct,
 )
 from transforms.augpred import sample_arrow_of_time, sample_permutation, sample_time_warp
@@ -66,9 +67,7 @@ def main() -> None:
     device = torch.device(str(cfg.get("compute_device", "cpu")))
 
     splits = load_splits(art_dir)
-    train_ids = [int(x) for x in splits["train"]]
-    val_ids = [int(x) for x in splits["val"]]
-    test_ids = [int(x) for x in splits["test"]]
+    train_ids, val_ids, test_ids = subject_split_ids(splits)
     assert_disjoint_subject_sets(train_ids, val_ids, test_ids)
 
     norm = load_norm_stats(art_dir)
@@ -83,6 +82,14 @@ def main() -> None:
         train_ds.motions,
         power=float(cfg.get("motion_weight_power", 1.0)),
         eps=float(cfg.get("motion_weight_eps", 1e-3)),
+    )
+    if not isinstance(sampler, WeightedRandomSampler):
+        raise TypeError("Expected WeightedRandomSampler for SSL training dataloader.")
+    logger.info(
+        "Using WeightedRandomSampler on %d train windows (motion^%.3f + eps=%.1e).",
+        len(train_ds),
+        float(cfg.get("motion_weight_power", 1.0)),
+        float(cfg.get("motion_weight_eps", 1e-3)),
     )
     train_loader = make_loader(
         train_ds,
