@@ -23,7 +23,15 @@ from models.linear_probe import LinearProbeHead
 from models.spiking_resnet1d import SpikingResNet1d
 from sklearn.metrics import classification_report
 
-from train.common import freeze_module, load_label_map, load_norm_stats, load_splits, subject_split_ids, to_bct
+from train.common import (
+    freeze_module,
+    load_label_map,
+    load_norm_stats,
+    load_splits,
+    resolve_compute_device,
+    subject_split_ids,
+    to_bct,
+)
 from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets
 from utils.checkpoint import load_checkpoint
 from utils.io import write_json
@@ -48,7 +56,7 @@ def main() -> None:
     )
     ap.add_argument("--output_dir", type=str, default="outputs/eval_runs/default")
     ap.add_argument("--config", type=str, default="model", help="Fallback model YAML if checkpoint lacks `model_cfg`")
-    ap.add_argument("--device", type=str, default="cpu")
+    ap.add_argument("--device", type=str, default="cuda", help="cuda (default), cpu, or e.g. cuda:1")
     args = ap.parse_args()
 
     ckpt_path = _resolve(args.checkpoint)
@@ -56,7 +64,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logger(log_file=out_dir / "eval.log")
-    device = torch.device(args.device)
+    device = resolve_compute_device(args.device)
+    logger.info("Compute device: %s", device)
 
     ckpt = load_checkpoint(ckpt_path, map_location=device)
 
@@ -86,7 +95,13 @@ def main() -> None:
 
     norm = load_norm_stats(art_dir)
     test_ds = WISDMSupervisedDataset(cache_dir, test_ids, mean=norm.mean, std=norm.std)
-    loader = DataLoader(test_ds, batch_size=128, shuffle=False, num_workers=0)
+    loader = DataLoader(
+        test_ds,
+        batch_size=128,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
 
     model_cfg = ckpt.get("model_cfg")
     if model_cfg is None:

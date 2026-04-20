@@ -84,13 +84,40 @@ def log_module_trainable(logger, name: str, m: nn.Module) -> None:
     logger.info("%s trainable params: %d", name, count_trainable_params(m))
 
 
-def make_loader(ds: Dataset, *, batch_size: int, shuffle: bool, num_workers: int, sampler=None) -> DataLoader:
+def resolve_compute_device(name: str) -> torch.device:
+    """
+    Resolve a config/CLI device string to `torch.device`.
+
+    - ``cuda`` / ``gpu`` require ``torch.cuda.is_available()``.
+    - Other strings (e.g. ``cpu``, ``cuda:1``) are passed to ``torch.device``.
+    """
+    key = (name or "cuda").strip().lower()
+    if key in {"cuda", "gpu"}:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "compute_device is set to CUDA but torch.cuda.is_available() is False. "
+                "Install a CUDA-enabled PyTorch build with a visible NVIDIA GPU, or set compute_device to 'cpu' in YAML."
+            )
+        return torch.device("cuda")
+    return torch.device(name)
+
+
+def make_loader(
+    ds: Dataset,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+    sampler=None,
+    device: torch.device | None = None,
+) -> DataLoader:
+    pin_memory = device is not None and device.type == "cuda"
     return DataLoader(
         ds,
         batch_size=batch_size,
         shuffle=shuffle if sampler is None else False,
         sampler=sampler,
         num_workers=num_workers,
-        pin_memory=False,
+        pin_memory=pin_memory,
         drop_last=False,
     )

@@ -7,7 +7,7 @@ batch_size: 32
 num_workers: 0
 lr: 0.001
 weight_decay: 0.0001
-compute_device: "cpu"
+compute_device: "cuda"
 
 # AugPred task hyperparameters
 perm_num_chunks: 8

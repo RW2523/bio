@@ -7,7 +7,7 @@ batch_size: 64
 num_workers: 0
 lr: 0.05
 weight_decay: 0.0
-compute_device: "cpu"
+compute_device: "cuda"
 
 # Path to backbone-only checkpoint saved during SSL pretraining
 pretrained_backbone_path: "outputs/checkpoints/ssl/backbone_best.pt"

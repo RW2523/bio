@@ -14,7 +14,7 @@ This document covers **environment setup**, **WISDM data placement**, **configur
 | **Git** | For clone/push. |
 | **Disk** | Raw WISDM + cached windows + checkpoints can require **several GB** for full runs. |
 | **RAM** | Full preprocessing loads per-subject streams; 8 GB+ comfortable for default settings. |
-| **GPU** | Optional. All configs default to `compute_device: "cpu"`; set to `cuda` if PyTorch sees a GPU. |
+| **GPU** | **Recommended for training.** Training and eval configs default to `compute_device: "cuda"` (and eval CLIs default to `--device cuda`). Use `compute_device: "cpu"` in YAML or `--device cpu` for eval if you have no CUDA-capable GPU or a CPU-only PyTorch build. |
 
 **macOS / Linux (Homebrew Python):** PEP 668 may block global `pip install`. **Always use a virtual environment** (below).
 
@@ -302,7 +302,8 @@ gh repo clone RW2523/bio
 | “Missing `raw/`” but zip is extracted | **Extra** top-level folder after unzip (`wisdm-dataset/wisdm-dataset/raw`) | Point `data_root` at the **inner** folder that directly contains `raw/` and `activity_key.txt` (see §4.2) |
 | `Empty test split` / split errors | Too few subjects after `max_subjects` / `debug_subjects` | Increase subjects or relax split logic in `data_tools/splits.py` |
 | SSL Case 2 cannot load weights | Missing SSL run or wrong `pretrained_backbone_path` | Run SSL first; path must point to `backbone_best.pt` or compatible checkpoint |
-| Very slow training | `compute_device: cpu` on large data | Use GPU, reduce `batch_size`, or use `debug` config |
+| Very slow training | CPU-only run on large data | Ensure NVIDIA drivers + CUDA PyTorch; keep `compute_device: "cuda"`, reduce `batch_size`, or use `debug` config |
+| `RuntimeError` about `torch.cuda.is_available()` is False | No GPU / CPU-only PyTorch while defaults request CUDA | Install CUDA-enabled PyTorch with a visible GPU, or set `compute_device: "cpu"` in the YAML (and `python eval/evaluate.py ... --device cpu`) |
 | `externally-managed-environment` (pip) | System Python on macOS | Always use a venv (section 3) |
 | UMAP errors | `umap-learn` not installed / incompatible | `pip install umap-learn` or use `--method tsne` in `visualize_embeddings.py` |
 

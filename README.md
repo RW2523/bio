@@ -16,6 +16,8 @@ This repository is a **modular research codebase** for **human activity recognit
 
 For **installation, UCI download/unzip, folder layout, `data_root`, troubleshooting, and Git workflow**, see **[setup.md](setup.md)** (especially **§4**).
 
+**Compute device:** training YAML (`compute_device`) and evaluation scripts default to **CUDA** when you request `cuda` / `gpu`, for faster runs on NVIDIA hardware. Without a GPU, set `compute_device: "cpu"` in your config or pass `--device cpu` to `eval/evaluate.py` and `eval/extract_features.py`.
+
 ---
 
 ## Quick start
@@ -45,6 +47,7 @@ python train/train_linear_probe_case1.py --config debug
 python train/train_linear_probe_case2.py --config debug
 python eval/evaluate.py --checkpoint outputs/checkpoints/case1/best.pt --output_dir outputs/eval_runs/case1_debug
 python eval/evaluate.py --checkpoint outputs/checkpoints/case2/best.pt --output_dir outputs/eval_runs/case2_debug
+# CPU-only machines: add `--device cpu` to the eval lines above.
 ```
 
 ### Exact command order (full / production settings)

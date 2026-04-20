@@ -6,7 +6,7 @@ debug_subjects: []
 
 epochs: 1
 batch_size: 8
-compute_device: "cpu"
+compute_device: "cuda"
 
 # For quick end-to-end checks, point case2-style runs at the SSL backbone checkpoint.
 pretrained_backbone_path: "outputs/checkpoints/ssl/backbone_best.pt"

@@ -26,6 +26,7 @@ from train.common import (
     load_splits,
     log_module_trainable,
     make_loader,
+    resolve_compute_device,
     resolve_path,
     subject_split_ids,
     to_bct,
@@ -62,7 +63,8 @@ def main() -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logger(log_file=ckpt_dir / "train.log")
-    device = torch.device(str(cfg.get("compute_device", "cpu")))
+    device = resolve_compute_device(str(cfg.get("compute_device", "cuda")))
+    logger.info("Compute device: %s", device)
 
     bb_path = cfg.get("pretrained_backbone_path")
     if not bb_path:
@@ -82,8 +84,20 @@ def main() -> None:
     train_ds = WISDMSupervisedDataset(cache_dir, train_ids, mean=norm.mean, std=norm.std)
     val_ds = WISDMSupervisedDataset(cache_dir, val_ids, mean=norm.mean, std=norm.std)
 
-    train_loader = make_loader(train_ds, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=int(cfg["num_workers"]))
-    val_loader = make_loader(val_ds, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=int(cfg["num_workers"]))
+    train_loader = make_loader(
+        train_ds,
+        batch_size=int(cfg["batch_size"]),
+        shuffle=True,
+        num_workers=int(cfg["num_workers"]),
+        device=device,
+    )
+    val_loader = make_loader(
+        val_ds,
+        batch_size=int(cfg["batch_size"]),
+        shuffle=False,
+        num_workers=int(cfg["num_workers"]),
+        device=device,
+    )
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
 

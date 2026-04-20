@@ -25,6 +25,7 @@ from train.common import (
     load_splits,
     log_module_trainable,
     make_loader,
+    resolve_compute_device,
     resolve_path,
     subject_split_ids,
     to_bct,
@@ -64,7 +65,8 @@ def main() -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logger(log_file=ckpt_dir / "pretrain.log")
-    device = torch.device(str(cfg.get("compute_device", "cpu")))
+    device = resolve_compute_device(str(cfg.get("compute_device", "cuda")))
+    logger.info("Compute device: %s", device)
 
     splits = load_splits(art_dir)
     train_ids, val_ids, test_ids = subject_split_ids(splits)
@@ -97,8 +99,15 @@ def main() -> None:
         shuffle=False,
         num_workers=int(cfg["num_workers"]),
         sampler=sampler,
+        device=device,
     )
-    val_loader = make_loader(val_ds, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=int(cfg["num_workers"]))
+    val_loader = make_loader(
+        val_ds,
+        batch_size=int(cfg["batch_size"]),
+        shuffle=False,
+        num_workers=int(cfg["num_workers"]),
+        device=device,
+    )
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
 
