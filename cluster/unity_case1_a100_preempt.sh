@@ -1,6 +1,11 @@
 #!/bin/bash
 # =============================================================================
-# UMass Unity (Slurm) — full WISDM pipeline for Case 1 only (no SSL / Case 2)
+# UMass Unity (Slurm) — Case 1 QUICK / preempt-friendly run (short walltime + qos short)
+#
+# For the ENTIRE cohort + multi-epoch Case 1 (production), use instead:
+#   cluster/unity_case1_full_a100.sh
+#
+# UMass Unity (Slurm) — WISDM pipeline for Case 1 only (no SSL / Case 2)
 #
 # Docs referenced:
 #   https://docs.unity.rc.umass.edu/documentation/tools/gpus/
