@@ -19,12 +19,12 @@ if str(ROOT) not in sys.path:
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
 from eval.confusion_matrix import save_confusion_matrix_figure
 from eval.metrics import compute_metrics
-from models.linear_probe import LinearProbeHead
 from models.spiking_resnet1d import SpikingResNet1d
 from sklearn.metrics import classification_report
 
 from train.common import (
     freeze_module,
+    linear_probe_head_from_cfg,
     load_label_map,
     load_norm_stats,
     load_splits,
@@ -128,7 +128,8 @@ def main() -> None:
         surrogate_alpha=float(model_cfg["surrogate_alpha"]),
         reset=str(model_cfg["lif_reset"]),
     ).to(device)
-    head = LinearProbeHead(backbone.out_dim, num_classes=num_classes).to(device)
+    probe_cfg = ckpt.get("probe_cfg") or {}
+    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, probe_cfg).to(device)
 
     backbone.load_state_dict(ckpt["backbone"], strict=True)
     head.load_state_dict(ckpt["head"], strict=True)

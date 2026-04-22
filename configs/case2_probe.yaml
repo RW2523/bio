@@ -2,12 +2,20 @@ inherits: ["data.yaml", "preprocess.yaml", "model.yaml"]
 
 experiment_name: "case2_augpred_frozen_probe"
 
-epochs: 10
+epochs: 50
 batch_size: 64
-num_workers: 0
-lr: 0.05
-weight_decay: 0.0
+num_workers: 4
 compute_device: "cuda"
+
+probe_optimizer: "adamw"
+lr: 0.002
+weight_decay: 0.01
+lr_scheduler: "cosine"
+lr_min_ratio: 0.02
+max_grad_norm: 1.0
+label_smoothing: 0.05
+class_balanced_loss: true
+probe_embedding_batchnorm: true
 
 # Path to backbone-only checkpoint saved during SSL pretraining
 pretrained_backbone_path: "outputs/checkpoints/ssl/backbone_best.pt"

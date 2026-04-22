@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -121,3 +121,62 @@ def make_loader(
         pin_memory=pin_memory,
         drop_last=False,
     )
+
+
+def probe_cfg_from_yaml(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """Subset of YAML saved in checkpoints so `eval/evaluate.py` can rebuild the same head."""
+    return {"probe_embedding_batchnorm": bool(cfg.get("probe_embedding_batchnorm", False))}
+
+
+def linear_probe_head_from_cfg(in_dim: int, num_classes: int, cfg: Mapping[str, Any]) -> nn.Module:
+    from models.linear_probe import LinearProbeHead
+
+    return LinearProbeHead(
+        in_dim,
+        num_classes=num_classes,
+        embedding_batchnorm=bool(cfg.get("probe_embedding_batchnorm", False)),
+    )
+
+
+def balanced_class_weights(counts: torch.Tensor) -> torch.Tensor:
+    """Inverse-frequency weights with mean 1 (sklearn-style balanced weights)."""
+    c = counts.to(dtype=torch.float32).clamp(min=1.0)
+    w = c.sum() / (c * c.numel())
+    return w * (c.numel() / w.sum())
+
+
+def build_probe_optimizer(params: Any, cfg: Mapping[str, Any]) -> Optimizer:
+    kind = str(cfg.get("probe_optimizer", "sgd")).strip().lower()
+    lr = float(cfg["lr"])
+    wd = float(cfg.get("weight_decay", 0.0))
+    if kind in {"adam", "adamw"}:
+        return torch.optim.AdamW(params, lr=lr, weight_decay=wd)
+    if kind == "sgd":
+        mom = float(cfg.get("momentum", 0.9))
+        return torch.optim.SGD(params, lr=lr, momentum=mom, weight_decay=wd)
+    raise ValueError(f"Unknown probe_optimizer {kind!r}; use 'sgd' or 'adamw'.")
+
+
+def build_probe_lr_scheduler(optimizer: Optimizer, cfg: Mapping[str, Any], total_epochs: int):
+    name = str(cfg.get("lr_scheduler", "none")).strip().lower()
+    if name in {"", "none"}:
+        return None
+    if name == "cosine":
+        lr = float(cfg["lr"])
+        eta_min = lr * float(cfg.get("lr_min_ratio", 0.05))
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(total_epochs), eta_min=eta_min)
+    raise ValueError(f"Unknown lr_scheduler {name!r}; use 'none' or 'cosine'.")
+
+
+def build_probe_criterion(
+    num_classes: int,
+    device: torch.device,
+    cfg: Mapping[str, Any],
+    *,
+    class_counts: torch.Tensor | None,
+) -> nn.CrossEntropyLoss:
+    weight: torch.Tensor | None = None
+    if bool(cfg.get("class_balanced_loss", False)) and class_counts is not None:
+        weight = balanced_class_weights(class_counts).to(device)
+    ls = float(cfg.get("label_smoothing", 0.0))
+    return nn.CrossEntropyLoss(weight=weight, label_smoothing=ls)

@@ -16,16 +16,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
-from models.linear_probe import LinearProbeHead
 from models.spiking_resnet1d import SpikingResNet1d
 from train.common import (
     assert_optimizer_excludes_module,
+    build_probe_criterion,
+    build_probe_lr_scheduler,
+    build_probe_optimizer,
     freeze_module,
+    linear_probe_head_from_cfg,
     load_label_map,
     load_norm_stats,
     load_splits,
     log_module_trainable,
     make_loader,
+    probe_cfg_from_yaml,
     resolve_compute_device,
     resolve_path,
     subject_split_ids,
@@ -134,7 +138,7 @@ def main() -> None:
     freeze_module(backbone)
     assert_backbone_frozen(backbone)
 
-    head = LinearProbeHead(backbone.out_dim, num_classes=num_classes).to(device)
+    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, cfg).to(device)
 
     _smoke(backbone, head, device, window_samples, num_classes)
     logger.info("Smoke batch OK.")
@@ -142,9 +146,24 @@ def main() -> None:
     log_module_trainable(logger, "backbone", backbone)
     log_module_trainable(logger, "head", head)
 
-    opt = torch.optim.SGD(head.parameters(), lr=float(cfg["lr"]), momentum=0.9, weight_decay=float(cfg.get("weight_decay", 0.0)))
+    class_counts_t: torch.Tensor | None = None
+    if bool(cfg.get("class_balanced_loss", False)):
+        class_counts_t = torch.from_numpy(train_ds.count_labels(num_classes))
+        logger.info(
+            "Class-balanced loss: train window counts min/median/max = %d / %.0f / %d",
+            int(class_counts_t.min()),
+            float(class_counts_t.float().median()),
+            int(class_counts_t.max()),
+        )
+
+    crit = build_probe_criterion(num_classes, device, cfg, class_counts=class_counts_t)
+    opt = build_probe_optimizer(head.parameters(), cfg)
     assert_optimizer_excludes_module(opt, backbone)
-    crit = nn.CrossEntropyLoss()
+    scheduler = build_probe_lr_scheduler(opt, cfg, int(cfg["epochs"]))
+    if scheduler is not None:
+        logger.info("Using lr_scheduler=%s on probe", str(cfg.get("lr_scheduler", "none")))
+
+    max_grad_norm = float(cfg.get("max_grad_norm", 0.0))
 
     best_val = float("inf")
     curves: dict[str, list[float]] = {"train_loss": [], "val_loss": [], "val_acc": []}
@@ -192,6 +211,8 @@ def main() -> None:
                 if not any(p.grad is not None and float(p.grad.detach().abs().sum()) > 0.0 for p in head.parameters()):
                     raise AssertionError("Expected non-zero gradients on linear probe parameters.")
                 probe_grad_checked = True
+            if max_grad_norm > 0.0:
+                torch.nn.utils.clip_grad_norm_(head.parameters(), max_grad_norm)
             opt.step()
             total += float(loss.detach().cpu())
             m += 1
@@ -200,7 +221,17 @@ def main() -> None:
         curves["train_loss"].append(train_loss)
         curves["val_loss"].append(val_loss)
         curves["val_acc"].append(val_acc)
-        logger.info("epoch=%d train_loss=%.5f val_loss=%.5f val_acc=%.4f", epoch, train_loss, val_loss, val_acc)
+        lr_now = float(opt.param_groups[0]["lr"])
+        logger.info(
+            "epoch=%d train_loss=%.5f val_loss=%.5f val_acc=%.4f lr=%.2e",
+            epoch,
+            train_loss,
+            val_loss,
+            val_acc,
+            lr_now,
+        )
+        if scheduler is not None:
+            scheduler.step()
 
         payload = {
             "epoch": epoch,
@@ -209,6 +240,7 @@ def main() -> None:
             "optimizer": opt.state_dict(),
             "model_cfg": model_cfg,
             "num_classes": num_classes,
+            "probe_cfg": probe_cfg_from_yaml(cfg),
         }
         save_checkpoint(ckpt_dir / "last.pt", payload)
         if val_loss < best_val:

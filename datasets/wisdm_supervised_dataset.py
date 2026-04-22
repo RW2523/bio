@@ -61,6 +61,12 @@ class WISDMSupervisedDataset(Dataset):
         motions_list = [p[2] for p in parts]
         self._motions = np.concatenate(motions_list, axis=0).astype(np.float64, copy=False)
 
+    def count_labels(self, num_classes: int) -> np.ndarray:
+        """Per-class window counts over all concatenated subjects (for class-balanced loss)."""
+        ys = [np.asarray(y, dtype=np.int64).reshape(-1) for _, y, _ in self.parts]
+        all_y = np.concatenate(ys, axis=0) if ys else np.zeros((0,), dtype=np.int64)
+        return np.bincount(all_y, minlength=num_classes).astype(np.int64)
+
     @property
     def motions(self) -> np.ndarray:
         return self._motions

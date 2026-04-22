@@ -1,27 +1,53 @@
 #!/bin/bash
 # =============================================================================
-# UMass Unity — FULL Case 1 pipeline (all subjects, preprocess + probe + eval)
+# UMass Unity Slurm — COMPLETE Case 1 pipeline (entire project path for Case 1)
 #
-# This is NOT the short gpu-preempt smoke script. It uses:
-#   - partition `gpu` (non-preempt, up to 48h default max on Unity general GPU)
-#   - NO `--qos=short` (that QoS is for shorter jobs; full WISDM often needs many hours)
-#   - A100 via `--constraint=a100`
-#   - Explicit merges: `preprocess` + `case1_probe` (never `debug.yaml`)
+# Runs end-to-end on one GPU node (A100):
+#   1) Dataset audit
+#   2) Manifest
+#   3) Full preprocess (all subjects from configs/data.yaml after patch)
+#   4) Case 1 train — frozen random spiking ResNet + trainable probe (configs/case1_probe.yaml)
+#   5) Test-set evaluation (metrics, confusion matrix, classification report)
 #
-# Docs: https://docs.unity.rc.umass.edu/documentation/tools/gpus/
-#       https://docs.unity.rc.umass.edu/documentation/jobs/sbatch
+# Does NOT run: SSL pretrain, Case 2.
 #
-# Submit (from anywhere, if you set absolute paths):
-#   export PROJECT_ROOT=/path/to/project    # contains train/, configs/, data_tools/
-#   export WISDM_DATA_ROOT=/path/to/wisdm-dataset
-#   sbatch cluster/unity_case1_full_a100.sh
+# Unity references:
+#   https://docs.unity.rc.umass.edu/documentation/tools/gpus/
+#   https://docs.unity.rc.umass.edu/documentation/jobs/sbatch
 #
-# Or from repo root:
-#   cd /path/to/project && export WISDM_DATA_ROOT=/work/.../wisdm-dataset
-#   sbatch cluster/unity_case1_full_a100.sh
+# ------------------------------------------------------------------------------
+# BEFORE FIRST RUN (login node)
 #
-# Override walltime / memory if Unity rejects the request:
-#   sbatch --time=12:00:00 --mem=256G cluster/unity_case1_full_a100.sh
+#   1) Clone repo, create venv, install deps (CUDA PyTorch matching cluster):
+#        cd /path/to/bio
+#        python3 -m venv .venv && source .venv/bin/activate
+#        pip install -r requirements.txt
+#        # Install torch with CUDA from https://pytorch.org if needed
+#
+#   2) Place WISDM extract so it contains: raw/phone/accel/..., activity_key.txt
+#
+#   3) Submit (recommended: cd into repo so logs land next to code):
+#        cd /path/to/bio
+#        export WISDM_DATA_ROOT=/path/to/wisdm-dataset
+#        sbatch cluster/unity_case1_full_a100.sh
+#
+#   If you submit from another directory, set PROJECT_ROOT explicitly:
+#        export PROJECT_ROOT=/path/to/bio
+#        export WISDM_DATA_ROOT=/path/to/wisdm-dataset
+#        sbatch --chdir="$PROJECT_ROOT" cluster/unity_case1_full_a100.sh
+#
+#   Override Slurm limits if Unity rejects the request:
+#        sbatch --time=1-00:00:00 --mem=256G cluster/unity_case1_full_a100.sh
+#
+# ------------------------------------------------------------------------------
+# OUTPUTS (under ${PROJECT_ROOT}/outputs/)
+#
+#   outputs/audit/                  — inspect_dataset + manifest
+#   outputs/artifacts/              — splits, norm_stats, label_map, preprocess_run.json
+#   outputs/cache/wisdm_windows/    — per-subject window .npz
+#   outputs/checkpoints/case1/      — best.pt, last.pt, train.log, curves.json
+#   outputs/eval_runs/case1/        — metrics.json, classification_report.txt, confusion_matrix.png
+#   slurm-case1-full-<jobid>.out/.err — this job’s stdout/stderr (submit directory)
 # =============================================================================
 
 #SBATCH --job-name=wisdm-case1-full
@@ -38,36 +64,56 @@
 
 set -euo pipefail
 
-# ------------- Required paths ------------------------------------------------
+# ------------- Required: WISDM tree -----------------------------------------
 if [[ -z "${WISDM_DATA_ROOT:-}" ]]; then
-  echo "ERROR: export WISDM_DATA_ROOT=/path/to/wisdm-dataset (folder with raw/ and activity_key.txt)." >&2
+  echo "ERROR: export WISDM_DATA_ROOT=/path/to/wisdm-dataset" >&2
+  echo "       (directory must contain raw/ and activity_key.txt)" >&2
   exit 1
 fi
 
+# Repo root: directory that contains train/, configs/, data_tools/, eval/
 : "${PROJECT_ROOT:=${SLURM_SUBMIT_DIR:-}}"
 if [[ ! -f "${PROJECT_ROOT}/train/train_linear_probe_case1.py" ]]; then
-  echo "ERROR: PROJECT_ROOT must point at the repo root (has train/). Got: ${PROJECT_ROOT}" >&2
-  echo "Fix: export PROJECT_ROOT=/absolute/path/to/project before sbatch." >&2
+  echo "ERROR: PROJECT_ROOT must be the repository root. Current: ${PROJECT_ROOT}" >&2
+  echo "       cd into the repo before sbatch, or: export PROJECT_ROOT=/absolute/path/to/repo" >&2
   exit 1
 fi
 
 : "${VENV_ROOT:=${PROJECT_ROOT}/.venv}"
+if [[ ! -f "${VENV_ROOT}/bin/activate" ]]; then
+  echo "ERROR: Missing venv at ${VENV_ROOT}" >&2
+  echo "       Create with: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt" >&2
+  exit 1
+fi
 
-# ---------------------------------------------------------------------------
 cd "${PROJECT_ROOT}"
-mkdir -p outputs/audit outputs/eval_runs/case1
+mkdir -p outputs/audit outputs/artifacts outputs/logs outputs/eval_runs/case1 outputs/checkpoints/case1
 
 # shellcheck source=/dev/null
 source "${VENV_ROOT}/bin/activate"
 
-# Optional: match your PyTorch CUDA build (module spider cuda)
+# Optional: match system CUDA/cuDNN to your torch build (module spider cuda)
 # module load cuda/12.6
 # module load cudnn/8.9.7.29-12-cuda12.6
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 
-# --- Patch data.yaml: WISDM path + force full cohort (never debug caps) ----
+echo "=== Job ==="
+echo "PROJECT_ROOT=${PROJECT_ROOT}"
+echo "WISDM_DATA_ROOT=${WISDM_DATA_ROOT}"
+echo "HOST=$(hostname) SLURM_JOB_ID=${SLURM_JOB_ID:-local}"
+python - <<'VERS'
+import sys
+try:
+    import torch
+    print("python", sys.version.split()[0], "| torch", torch.__version__, "| cuda?", torch.cuda.is_available())
+except Exception as e:
+    print("python", sys.version.split()[0], "| torch import failed:", e)
+    sys.exit(1)
+VERS
+
+# --- Patch configs/data.yaml: cluster path + full cohort --------------------
 DATA_YAML="${PROJECT_ROOT}/configs/data.yaml"
 DATA_BAK="${SLURM_TMPDIR:-/tmp}/data.yaml.bak.${SLURM_JOB_ID:-$$}"
 cp -a "${DATA_YAML}" "${DATA_BAK}"
@@ -91,7 +137,7 @@ p.write_text(yaml.dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-
 print(f"Patched data.yaml: data_root={dr} max_subjects=null debug_subjects=[]")
 PATCH
 
-# --- Verify merged preprocess config does not inherit debug limits ----------
+# --- Verify merged configs (no debug subject cap; case1 epochs reasonable) --
 python3 <<'VERIFY' || exit 1
 import os
 import sys
@@ -103,44 +149,53 @@ os.chdir(pr)
 from utils.yaml_config import load_merged_config
 
 cfg = load_merged_config("preprocess")
-ms = cfg.get("max_subjects")
-ds = cfg.get("debug_subjects") or []
-if ms is not None:
-    raise SystemExit(f"Refusing to run: merged preprocess has max_subjects={ms!r} (expected null for full run).")
+if cfg.get("max_subjects") is not None:
+    raise SystemExit(f"Refusing: merged preprocess has max_subjects={cfg.get('max_subjects')!r}")
 if cfg.get("debug_subjects"):
-    raise SystemExit(f"Refusing to run: merged preprocess has debug_subjects={cfg.get('debug_subjects')!r}.")
-print("VERIFY OK: merged `preprocess` uses all subjects (max_subjects is null).")
+    raise SystemExit(f"Refusing: merged preprocess has debug_subjects={cfg.get('debug_subjects')!r}")
+print("VERIFY OK: preprocess uses all discovered subjects.")
 
 c1 = load_merged_config("case1_probe")
-ep = int(c1.get("epochs", 0))
-if ep < 2:
-    print(f"WARNING: case1_probe epochs={ep} is very low for a full study.", file=sys.stderr)
-else:
-    print(f"VERIFY OK: case1_probe epochs={ep}.")
+print(
+    "Case1 config:",
+    "epochs=", c1.get("epochs"),
+    "batch_size=", c1.get("batch_size"),
+    "probe_optimizer=", c1.get("probe_optimizer", "sgd"),
+    "lr=", c1.get("lr"),
+    "compute_device=", c1.get("compute_device"),
+)
+if int(c1.get("epochs", 0)) < 2:
+    print("WARNING: case1_probe epochs < 2 is only for debugging.", file=sys.stderr)
 VERIFY
 
 echo "=== GPU ==="
 nvidia-smi -L || true
 
 OUT_AUDIT="${PROJECT_ROOT}/outputs/audit"
+ART_DIR="${PROJECT_ROOT}/outputs/artifacts"
 
-echo "=== 1) Dataset audit ==="
+echo "=== 1/5 Dataset audit ==="
 python data_tools/inspect_dataset.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUT_AUDIT}"
 
-echo "=== 2) Manifest ==="
+echo "=== 2/5 Manifest ==="
 python data_tools/build_manifest.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUT_AUDIT}"
 
-echo "=== 3) Preprocess FULL (configs/preprocess + data; all subjects) ==="
+echo "=== 3/5 Preprocess (full cohort; --config preprocess) ==="
 python data_tools/preprocess_wisdm.py --config preprocess
 
-echo "=== 4) Case 1 linear probe (configs/case1_probe; frozen random backbone) ==="
+echo "=== 4/5 Train Case 1 (--config case1_probe) ==="
 python train/train_linear_probe_case1.py --config case1_probe
 
-echo "=== 5) Evaluate Case 1 on held-out test ==="
+echo "=== 5/5 Evaluate held-out test subjects ==="
 python eval/evaluate.py \
   --checkpoint "${PROJECT_ROOT}/outputs/checkpoints/case1/best.pt" \
+  --artifacts_dir "${ART_DIR}" \
+  --config case1_probe \
   --output_dir "${PROJECT_ROOT}/outputs/eval_runs/case1"
 
-echo "=== Done ==="
-echo "Checkpoints: ${PROJECT_ROOT}/outputs/checkpoints/case1/"
-echo "Metrics:     ${PROJECT_ROOT}/outputs/eval_runs/case1/metrics.json"
+echo ""
+echo "=== Case 1 pipeline finished OK ==="
+echo "  Checkpoints: ${PROJECT_ROOT}/outputs/checkpoints/case1/"
+echo "  Metrics:     ${PROJECT_ROOT}/outputs/eval_runs/case1/metrics.json"
+echo "  Report:      ${PROJECT_ROOT}/outputs/eval_runs/case1/classification_report.txt"
+echo "  Figure:      ${PROJECT_ROOT}/outputs/eval_runs/case1/confusion_matrix.png"
