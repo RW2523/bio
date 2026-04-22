@@ -56,30 +56,48 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=02:00:00
 #SBATCH --gpus=1
 #SBATCH --constraint=a100
-#SBATCH --output=slurm-case1-full-%j.out
-#SBATCH --error=slurm-case1-full-%j.err
+#SBATCH --qos=short
+#SBATCH --output=outputs/logs/slurm-case1-full-%j.out
+#SBATCH --error=outputs/logs/slurm-case1-full-%j.err
 
 set -euo pipefail
 
 # ------------- Required: WISDM tree -----------------------------------------
-if [[ -z "${WISDM_DATA_ROOT:-}" ]]; then
-  echo "ERROR: export WISDM_DATA_ROOT=/path/to/wisdm-dataset" >&2
-  echo "       (directory must contain raw/ and activity_key.txt)" >&2
+# Repo root: directory that contains train/, configs/, data_tools/, eval/
+: "${PROJECT_ROOT:=${SLURM_SUBMIT_DIR:-}}"
+DEFAULT_WISDM_DATA_ROOT="$(dirname "${PROJECT_ROOT}")/wisdm-dataset"
+: "${WISDM_DATA_ROOT:=${DEFAULT_WISDM_DATA_ROOT}}"
+
+if [[ "${WISDM_DATA_ROOT}" == "/absolute/path/to/wisdm-dataset" ]]; then
+  echo "ERROR: WISDM_DATA_ROOT is still the placeholder path /absolute/path/to/wisdm-dataset." >&2
+  echo "       Use ${DEFAULT_WISDM_DATA_ROOT} for this repo layout, or pass your real dataset path." >&2
   exit 1
 fi
 
-# Repo root: directory that contains train/, configs/, data_tools/, eval/
-: "${PROJECT_ROOT:=${SLURM_SUBMIT_DIR:-}}"
 if [[ ! -f "${PROJECT_ROOT}/train/train_linear_probe_case1.py" ]]; then
   echo "ERROR: PROJECT_ROOT must be the repository root. Current: ${PROJECT_ROOT}" >&2
   echo "       cd into the repo before sbatch, or: export PROJECT_ROOT=/absolute/path/to/repo" >&2
   exit 1
 fi
 
+if [[ ! -d "${WISDM_DATA_ROOT}" ]]; then
+  echo "ERROR: WISDM_DATA_ROOT=${WISDM_DATA_ROOT} does not exist." >&2
+  echo "       Expected a directory containing raw/ and activity_key.txt." >&2
+  echo "       For this repo layout, the default is ${DEFAULT_WISDM_DATA_ROOT}." >&2
+  exit 1
+fi
+
+if [[ ! -d "${WISDM_DATA_ROOT}/raw" || ! -f "${WISDM_DATA_ROOT}/activity_key.txt" ]]; then
+  echo "ERROR: WISDM_DATA_ROOT=${WISDM_DATA_ROOT} is missing raw/ or activity_key.txt." >&2
+  exit 1
+fi
+
 : "${VENV_ROOT:=${PROJECT_ROOT}/.venv}"
+export PROJECT_ROOT WISDM_DATA_ROOT VENV_ROOT
+
 if [[ ! -f "${VENV_ROOT}/bin/activate" ]]; then
   echo "ERROR: Missing venv at ${VENV_ROOT}" >&2
   echo "       Create with: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt" >&2
