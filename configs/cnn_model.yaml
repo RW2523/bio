@@ -1,0 +1,11 @@
+# Continuous Conv1D ResNet baseline. Keep this contract aligned with model.yaml
+# where possible so CNN and SNN comparisons differ mainly by activation dynamics.
+input_layout: "BCT"
+backbone_type: "cnn_resnet1d"
+
+in_channels: 3
+base_channels: 32
+layers: [1, 1, 2]
+stem_kernel: 7
+
+num_classes: 18

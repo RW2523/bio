@@ -55,9 +55,10 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=02:00:00
 #SBATCH --gpus=1
 #SBATCH --constraint=a100
+#SBATCH --qos=short
 #SBATCH --output=outputs/logs/slurm-case2-full-%j.out
 #SBATCH --error=outputs/logs/slurm-case2-full-%j.err
 

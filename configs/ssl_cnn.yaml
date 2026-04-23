@@ -1,0 +1,21 @@
+inherits: ["data.yaml", "preprocess.yaml", "cnn_model.yaml"]
+
+experiment_name: "augpred_ssl_cnn"
+
+epochs: 20
+batch_size: 64
+num_workers: 4
+lr: 0.001
+weight_decay: 0.0001
+compute_device: "cuda"
+
+perm_num_chunks: 8
+timewarp_sigma: 0.2
+timewarp_knots: 4
+
+motion_weight_power: 1.0
+motion_weight_eps: 1.0e-3
+use_split: "train"
+
+checkpoint_subdir: "checkpoints/cnn_ssl"
+seed: 42
