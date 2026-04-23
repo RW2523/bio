@@ -1,0 +1,4 @@
+inherits: ["data.yaml", "preprocess.yaml", "model_snn_zcsf.yaml", "case1_probe.yaml"]
+
+experiment_name: "case1_random_frozen_probe_snn_zcsf"
+checkpoint_subdir: "checkpoints/snn_zcsf_case1"

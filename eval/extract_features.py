@@ -16,8 +16,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
-from models.spiking_resnet1d import SpikingResNet1d
 from train.common import freeze_module, load_norm_stats, load_splits, resolve_compute_device, to_bct
+from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
 from utils.assertions import assert_backbone_frozen
 from utils.checkpoint import load_checkpoint
 from utils.paths import project_root
@@ -56,27 +56,9 @@ def main() -> None:
     model_cfg = ckpt.get("model_cfg")
     if model_cfg is None:
         cfg = load_merged_config(args.config)
-        model_cfg = {
-            "in_channels": int(cfg.get("in_channels", 3)),
-            "base_channels": int(cfg.get("base_channels", 32)),
-            "layers": [int(x) for x in cfg.get("layers", [1, 1, 2])],
-            "stem_kernel": int(cfg.get("stem_kernel", 7)),
-            "lif_beta": float(cfg.get("lif_beta", 0.9)),
-            "lif_threshold": float(cfg.get("lif_threshold", 1.0)),
-            "surrogate_alpha": float(cfg.get("surrogate_alpha", 2.0)),
-            "lif_reset": str(cfg.get("lif_reset", "subtract")),
-        }
+        model_cfg = snn_model_cfg_from_yaml(cfg)
 
-    backbone = SpikingResNet1d(
-        in_channels=int(model_cfg["in_channels"]),
-        base_channels=int(model_cfg["base_channels"]),
-        layers=tuple(int(x) for x in model_cfg["layers"]),
-        stem_kernel=int(model_cfg["stem_kernel"]),
-        beta=float(model_cfg["lif_beta"]),
-        threshold=float(model_cfg["lif_threshold"]),
-        surrogate_alpha=float(model_cfg["surrogate_alpha"]),
-        reset=str(model_cfg["lif_reset"]),
-    ).to(device)
+    backbone = build_snn_backbone(model_cfg).to(device)
     if "state_dict" in ckpt:
         state = ckpt["state_dict"]
     elif "backbone" in ckpt:

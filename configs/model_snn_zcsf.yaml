@@ -1,0 +1,8 @@
+inherits: "model.yaml"
+
+backbone_type: "spiking_resnet1d"
+input_encoder_type: "zcsf"
+
+# Zero-Crossing Step-Forward encoder for low-frequency IMU
+zcsf_step: 0.25
+zcsf_emit_start_event: false

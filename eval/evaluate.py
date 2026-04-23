@@ -19,7 +19,6 @@ if str(ROOT) not in sys.path:
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
 from eval.confusion_matrix import save_confusion_matrix_figure
 from eval.metrics import compute_metrics
-from models.spiking_resnet1d import SpikingResNet1d
 from sklearn.metrics import classification_report
 
 from train.common import (
@@ -32,6 +31,7 @@ from train.common import (
     subject_split_ids,
     to_bct,
 )
+from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
 from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets
 from utils.checkpoint import load_checkpoint
 from utils.io import write_json
@@ -106,28 +106,10 @@ def main() -> None:
     model_cfg = ckpt.get("model_cfg")
     if model_cfg is None:
         cfg = load_merged_config(args.config)
-        model_cfg = {
-            "in_channels": int(cfg.get("in_channels", 3)),
-            "base_channels": int(cfg.get("base_channels", 32)),
-            "layers": [int(x) for x in cfg.get("layers", [1, 1, 2])],
-            "stem_kernel": int(cfg.get("stem_kernel", 7)),
-            "lif_beta": float(cfg.get("lif_beta", 0.9)),
-            "lif_threshold": float(cfg.get("lif_threshold", 1.0)),
-            "surrogate_alpha": float(cfg.get("surrogate_alpha", 2.0)),
-            "lif_reset": str(cfg.get("lif_reset", "subtract")),
-        }
+        model_cfg = snn_model_cfg_from_yaml(cfg)
         logger.warning("Checkpoint missing `model_cfg`; rebuilt architecture from `--config %s`.", args.config)
 
-    backbone = SpikingResNet1d(
-        in_channels=int(model_cfg["in_channels"]),
-        base_channels=int(model_cfg["base_channels"]),
-        layers=tuple(int(x) for x in model_cfg["layers"]),
-        stem_kernel=int(model_cfg["stem_kernel"]),
-        beta=float(model_cfg["lif_beta"]),
-        threshold=float(model_cfg["lif_threshold"]),
-        surrogate_alpha=float(model_cfg["surrogate_alpha"]),
-        reset=str(model_cfg["lif_reset"]),
-    ).to(device)
+    backbone = build_snn_backbone(model_cfg).to(device)
     probe_cfg = ckpt.get("probe_cfg") or {}
     head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, probe_cfg).to(device)
 

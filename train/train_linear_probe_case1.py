@@ -16,7 +16,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
-from models.spiking_resnet1d import SpikingResNet1d
 from train.common import (
     assert_optimizer_excludes_module,
     build_probe_criterion,
@@ -35,6 +34,7 @@ from train.common import (
     subject_split_ids,
     to_bct,
 )
+from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
 from utils.assertions import assert_backbone_frozen, assert_backbone_no_stored_gradients, assert_disjoint_subject_sets, assert_label_range
 from utils.checkpoint import save_checkpoint
 from utils.io import read_json, write_json
@@ -99,26 +99,8 @@ def main() -> None:
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
 
-    model_cfg = {
-        "in_channels": int(cfg.get("in_channels", 3)),
-        "base_channels": int(cfg.get("base_channels", 32)),
-        "layers": [int(x) for x in cfg.get("layers", [1, 1, 2])],
-        "stem_kernel": int(cfg.get("stem_kernel", 7)),
-        "lif_beta": float(cfg.get("lif_beta", 0.9)),
-        "lif_threshold": float(cfg.get("lif_threshold", 1.0)),
-        "surrogate_alpha": float(cfg.get("surrogate_alpha", 2.0)),
-        "lif_reset": str(cfg.get("lif_reset", "subtract")),
-    }
-    backbone = SpikingResNet1d(
-        in_channels=model_cfg["in_channels"],
-        base_channels=model_cfg["base_channels"],
-        layers=tuple(model_cfg["layers"]),
-        stem_kernel=model_cfg["stem_kernel"],
-        beta=model_cfg["lif_beta"],
-        threshold=model_cfg["lif_threshold"],
-        surrogate_alpha=model_cfg["surrogate_alpha"],
-        reset=model_cfg["lif_reset"],
-    ).to(device)
+    model_cfg = snn_model_cfg_from_yaml(cfg)
+    backbone = build_snn_backbone(model_cfg).to(device)
 
     freeze_module(backbone)
     assert_backbone_frozen(backbone)
@@ -224,6 +206,7 @@ def main() -> None:
             "head": head.state_dict(),
             "optimizer": opt.state_dict(),
             "model_cfg": model_cfg,
+            "backbone_type": "spiking_resnet1d",
             "num_classes": num_classes,
             "probe_cfg": probe_cfg_from_yaml(cfg),
         }

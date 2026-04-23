@@ -1,0 +1,5 @@
+inherits: ["data.yaml", "preprocess.yaml", "model_snn_zcsf.yaml", "case2_probe.yaml"]
+
+experiment_name: "case2_augpred_frozen_probe_snn_zcsf"
+pretrained_backbone_path: "outputs/checkpoints/snn_zcsf_ssl/backbone_best.pt"
+checkpoint_subdir: "checkpoints/snn_zcsf_case2"

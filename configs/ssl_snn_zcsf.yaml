@@ -1,0 +1,4 @@
+inherits: ["data.yaml", "preprocess.yaml", "model_snn_zcsf.yaml", "ssl.yaml"]
+
+experiment_name: "augpred_ssl_snn_zcsf"
+checkpoint_subdir: "checkpoints/snn_zcsf_ssl"

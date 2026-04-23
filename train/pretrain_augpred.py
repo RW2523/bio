@@ -17,7 +17,6 @@ if str(ROOT) not in sys.path:
 
 from datasets.weighted_sampler import build_weighted_sampler
 from datasets.wisdm_ssl_dataset import WISDMSSLDataset
-from models.spiking_resnet1d import SpikingResNet1d
 from models.ssl_heads import AugPredSSLHeads
 from train.common import (
     load_label_map,
@@ -30,6 +29,7 @@ from train.common import (
     subject_split_ids,
     to_bct,
 )
+from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
 from transforms.augpred import sample_arrow_of_time, sample_permutation, sample_time_warp
 from utils.assertions import assert_disjoint_subject_sets
 from utils.checkpoint import save_checkpoint
@@ -111,26 +111,8 @@ def main() -> None:
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
 
-    model_cfg = {
-        "in_channels": int(cfg.get("in_channels", 3)),
-        "base_channels": int(cfg.get("base_channels", 32)),
-        "layers": [int(x) for x in cfg.get("layers", [1, 1, 2])],
-        "stem_kernel": int(cfg.get("stem_kernel", 7)),
-        "lif_beta": float(cfg.get("lif_beta", 0.9)),
-        "lif_threshold": float(cfg.get("lif_threshold", 1.0)),
-        "surrogate_alpha": float(cfg.get("surrogate_alpha", 2.0)),
-        "lif_reset": str(cfg.get("lif_reset", "subtract")),
-    }
-    backbone = SpikingResNet1d(
-        in_channels=model_cfg["in_channels"],
-        base_channels=model_cfg["base_channels"],
-        layers=tuple(model_cfg["layers"]),
-        stem_kernel=model_cfg["stem_kernel"],
-        beta=model_cfg["lif_beta"],
-        threshold=model_cfg["lif_threshold"],
-        surrogate_alpha=model_cfg["surrogate_alpha"],
-        reset=model_cfg["lif_reset"],
-    ).to(device)
+    model_cfg = snn_model_cfg_from_yaml(cfg)
+    backbone = build_snn_backbone(model_cfg).to(device)
     heads = AugPredSSLHeads(backbone.out_dim).to(device)
 
     _smoke_batch(backbone, heads, device, window_samples)
@@ -204,14 +186,14 @@ def main() -> None:
         save_checkpoint(ckpt_dir / "last.pt", payload)
         save_checkpoint(
             ckpt_dir / "backbone_last.pt",
-            {"state_dict": backbone.state_dict(), "epoch": epoch, "model_cfg": model_cfg},
+            {"state_dict": backbone.state_dict(), "epoch": epoch, "model_cfg": model_cfg, "backbone_type": "spiking_resnet1d"},
         )
         if val_loss < best_val:
             best_val = val_loss
             save_checkpoint(ckpt_dir / "best.pt", payload)
             save_checkpoint(
                 ckpt_dir / "backbone_best.pt",
-                {"state_dict": backbone.state_dict(), "epoch": epoch, "model_cfg": model_cfg},
+                {"state_dict": backbone.state_dict(), "epoch": epoch, "model_cfg": model_cfg, "backbone_type": "spiking_resnet1d"},
             )
 
     write_json(ckpt_dir / "curves.json", curves)
