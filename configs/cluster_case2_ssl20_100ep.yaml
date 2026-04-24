@@ -1,0 +1,5 @@
+inherits: ["case2_after_ssl20.yaml"]
+
+experiment_name: "cluster_case2_ssl20_100ep"
+epochs: 100
+checkpoint_subdir: "checkpoints/cluster_case2"

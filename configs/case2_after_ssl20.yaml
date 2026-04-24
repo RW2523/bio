@@ -1,0 +1,5 @@
+inherits: ["case2_probe.yaml"]
+
+experiment_name: "case2_after_ssl20ep"
+pretrained_backbone_path: "outputs/checkpoints/ssl_ep20/backbone_best.pt"
+checkpoint_subdir: "checkpoints/case2_after_ssl20"

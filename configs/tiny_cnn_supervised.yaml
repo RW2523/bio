@@ -1,0 +1,11 @@
+inherits: ["data.yaml", "preprocess.yaml"]
+
+experiment_name: "tiny_cnn_supervised_e2e"
+epochs: 30
+batch_size: 128
+num_workers: 2
+compute_device: "cuda"
+lr: 0.001
+weight_decay: 0.0001
+seed: 42
+checkpoint_subdir: "checkpoints/tiny_cnn_supervised"

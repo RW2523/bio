@@ -1,0 +1,5 @@
+# Merge with other configs so `output_dir` and SSL backbone paths resolve under `outputs 2/`.
+# Example: python train/train_linear_probe_case2.py --config outputs2_case2_zcsf
+
+output_dir: "outputs 2"
+pretrained_backbone_path: "outputs 2/checkpoints/snn_zcsf_ssl/backbone_best.pt"

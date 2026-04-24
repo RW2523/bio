@@ -1,0 +1,5 @@
+inherits: ["case2_probe.yaml"]
+
+experiment_name: "case2_ablation_best_val_acc"
+best_checkpoint_metric: "val_acc"
+checkpoint_subdir: "checkpoints/case2_ablation_best_val_acc"

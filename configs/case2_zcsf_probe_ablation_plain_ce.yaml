@@ -1,0 +1,8 @@
+inherits: ["case2_probe_snn_zcsf.yaml"]
+
+experiment_name: "case2_zcsf_ablation_plain_ce_valacc"
+best_checkpoint_metric: "val_acc"
+class_balanced_loss: false
+label_smoothing: 0.0
+weight_decay: 0.0
+checkpoint_subdir: "checkpoints/snn_zcsf_case2_ablation_plain_ce"

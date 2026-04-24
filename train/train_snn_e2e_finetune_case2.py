@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Case 1: randomly initialized frozen spiking ResNet + linear probe."""
+"""Case 2 variant: SSL backbone + linear head, backbone unfrozen for end-to-end fine-tuning."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -16,50 +17,33 @@ if str(ROOT) not in sys.path:
 
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
 from train.common import (
-    assert_optimizer_excludes_module,
     build_probe_criterion,
     build_probe_lr_scheduler,
-    build_probe_optimizer,
-    freeze_module,
     linear_probe_head_from_cfg,
     load_label_map,
     load_norm_stats,
     load_splits,
     log_module_trainable,
     make_loader,
+    probe_cfg_from_yaml,
     resolve_compute_device,
     resolve_path,
     subject_split_ids,
     to_bct,
 )
-from train.frozen_linear_probe_loop import (
-    eval_frozen_backbone_probe,
-    snn_probe_checkpoint_payload,
-    train_one_epoch_frozen_backbone_probe,
-)
 from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
-from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets, assert_label_range
-from utils.checkpoint import save_checkpoint
+from utils.assertions import assert_disjoint_subject_sets, assert_label_range
+from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.io import read_json, write_json
 from utils.logger import setup_logger
-from utils.training_curves import save_supervised_curves_png
 from utils.seed import set_seed
+from utils.training_curves import save_supervised_curves_png
 from utils.yaml_config import load_merged_config
-
-
-@torch.no_grad()
-def _smoke(backbone: nn.Module, head: nn.Module, device: torch.device, window_samples: int, num_classes: int) -> None:
-    b = 2
-    x = torch.randn(b, window_samples, 3, device=device)
-    z = backbone(to_bct(x))
-    logits = head(z)
-    assert logits.shape == (b, num_classes)
-    assert_label_range(torch.tensor([0, num_classes - 1]), num_classes)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=str, default="case1_probe")
+    ap.add_argument("--config", type=str, default="case2_e2e_finetune")
     args = ap.parse_args()
 
     cfg = load_merged_config(args.config)
@@ -68,12 +52,19 @@ def main() -> None:
     out_root = resolve_path(cfg["output_dir"])
     art_dir = out_root / str(cfg["artifacts_subdir"])
     cache_dir = out_root / str(cfg["cache_subdir"])
-    ckpt_dir = out_root / str(cfg.get("checkpoint_subdir", "checkpoints/case1"))
+    ckpt_dir = out_root / str(cfg.get("checkpoint_subdir", "checkpoints/case2_e2e"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logger(log_file=ckpt_dir / "train.log")
     device = resolve_compute_device(str(cfg.get("compute_device", "cuda")))
     logger.info("Compute device: %s", device)
+
+    bb_path = cfg.get("pretrained_backbone_path")
+    if not bb_path:
+        raise ValueError("pretrained_backbone_path required (SSL backbone_best.pt).")
+    bb_path = resolve_path(str(bb_path))
+    if not bb_path.exists():
+        raise FileNotFoundError(bb_path)
 
     splits = load_splits(art_dir)
     train_ids, val_ids, test_ids = subject_split_ids(splits)
@@ -102,16 +93,22 @@ def main() -> None:
     )
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
-
-    model_cfg = snn_model_cfg_from_yaml(cfg)
+    yaml_model_cfg = snn_model_cfg_from_yaml(cfg)
+    bb_ckpt = load_checkpoint(bb_path, map_location=device)
+    model_cfg = bb_ckpt.get("model_cfg", yaml_model_cfg)
     backbone = build_snn_backbone(model_cfg).to(device)
+    backbone.load_state_dict(bb_ckpt["state_dict"], strict=True)
 
-    freeze_module(backbone)
-    assert_backbone_frozen(backbone)
+    for p in backbone.parameters():
+        p.requires_grad = True
+    backbone.train()
 
     head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, cfg).to(device)
 
-    _smoke(backbone, head, device, window_samples, num_classes)
+    b = 2
+    x0 = torch.randn(b, window_samples, 3, device=device)
+    logits0 = head(backbone(to_bct(x0)))
+    assert logits0.shape == (b, num_classes)
     logger.info("Smoke batch OK.")
 
     log_module_trainable(logger, "backbone", backbone)
@@ -120,26 +117,21 @@ def main() -> None:
     class_counts_t: torch.Tensor | None = None
     if bool(cfg.get("class_balanced_loss", False)):
         class_counts_t = torch.from_numpy(train_ds.count_labels(num_classes))
-        logger.info(
-            "Class-balanced loss: train window counts min/median/max = %d / %.0f / %d",
-            int(class_counts_t.min()),
-            float(class_counts_t.float().median()),
-            int(class_counts_t.max()),
-        )
 
     crit = build_probe_criterion(num_classes, device, cfg, class_counts=class_counts_t)
-    opt = build_probe_optimizer(head.parameters(), cfg)
-    assert_optimizer_excludes_module(opt, backbone)
+    head_lr = float(cfg["lr"])
+    bb_lr = float(cfg.get("backbone_lr", head_lr * float(cfg.get("backbone_lr_ratio", 0.1))))
+    wd = float(cfg.get("weight_decay", 0.0))
+    opt = torch.optim.AdamW(
+        [{"params": backbone.parameters(), "lr": bb_lr}, {"params": head.parameters(), "lr": head_lr}],
+        weight_decay=wd,
+    )
     scheduler = build_probe_lr_scheduler(opt, cfg, int(cfg["epochs"]))
-    if scheduler is not None:
-        logger.info("Using lr_scheduler=%s on probe", str(cfg.get("lr_scheduler", "none")))
-
     max_grad_norm = float(cfg.get("max_grad_norm", 0.0))
 
     best_ckpt_metric = str(cfg.get("best_checkpoint_metric", "val_loss")).strip().lower()
     if best_ckpt_metric not in {"val_loss", "val_acc"}:
         raise ValueError("best_checkpoint_metric must be 'val_loss' or 'val_acc'")
-    logger.info("Saving best.pt when %s improves (lower loss or higher acc).", best_ckpt_metric)
 
     best_val_loss = float("inf")
     best_val_acc = -1.0
@@ -147,41 +139,82 @@ def main() -> None:
     best_val_acc_epoch = 0
     curves: dict[str, list[float]] = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
 
+    def eval_loader(loader: DataLoader) -> tuple[float, float]:
+        backbone.eval()
+        head.eval()
+        tot = 0.0
+        n = 0
+        correct = 0
+        count = 0
+        with torch.no_grad():
+            for x, y, _w in loader:
+                x = x.to(device)
+                y = y.to(device)
+                logits = head(backbone(to_bct(x)))
+                loss = crit(logits, y)
+                tot += float(loss.detach().cpu())
+                n += 1
+                pred = torch.argmax(logits, dim=-1)
+                correct += int((pred == y).sum().item())
+                count += int(y.numel())
+        return tot / max(n, 1), correct / max(count, 1)
+
     epochs = int(cfg["epochs"])
-    probe_grad_checked = False
     for epoch in range(1, epochs + 1):
-        train_loss, train_acc, probe_grad_checked = train_one_epoch_frozen_backbone_probe(
-            backbone,
-            head,
-            train_loader,
-            opt,
-            crit,
-            device,
-            num_classes,
-            max_grad_norm,
-            probe_grad_checked,
-        )
-        val_loss, val_acc = eval_frozen_backbone_probe(backbone, head, val_loader, crit, device)
+        backbone.train()
+        head.train()
+        total = 0.0
+        m = 0
+        train_correct = 0
+        train_count = 0
+        for x, y, _w in train_loader:
+            x = x.to(device)
+            y = y.to(device)
+            assert_label_range(y, num_classes)
+            opt.zero_grad(set_to_none=True)
+            logits = head(backbone(to_bct(x)))
+            loss = crit(logits, y)
+            loss.backward()
+            if max_grad_norm > 0.0:
+                torch.nn.utils.clip_grad_norm_(list(backbone.parameters()) + list(head.parameters()), max_grad_norm)
+            opt.step()
+            total += float(loss.detach().cpu())
+            m += 1
+            pred = torch.argmax(logits.detach(), dim=-1)
+            train_correct += int((pred == y).sum().item())
+            train_count += int(y.numel())
+
+        train_loss = total / max(m, 1)
+        train_acc = train_correct / max(train_count, 1)
+        val_loss, val_acc = eval_loader(val_loader)
         curves["train_loss"].append(train_loss)
         curves["val_loss"].append(val_loss)
         curves["train_acc"].append(train_acc)
         curves["val_acc"].append(val_acc)
-        lr_now = float(opt.param_groups[0]["lr"])
+
         logger.info(
-            "epoch=%d train_loss=%.5f train_acc=%.4f val_loss=%.5f val_acc=%.4f lr=%.2e",
+            "epoch=%d train_loss=%.5f train_acc=%.4f val_loss=%.5f val_acc=%.4f",
             epoch,
             train_loss,
             train_acc,
             val_loss,
             val_acc,
-            lr_now,
         )
         if scheduler is not None:
             scheduler.step()
 
-        payload = snn_probe_checkpoint_payload(
-            epoch, backbone, head, opt, model_cfg, num_classes, cfg, best_ckpt_metric
-        )
+        payload = {
+            "epoch": epoch,
+            "backbone": backbone.state_dict(),
+            "head": head.state_dict(),
+            "optimizer": opt.state_dict(),
+            "model_cfg": model_cfg,
+            "backbone_type": "spiking_resnet1d",
+            "num_classes": num_classes,
+            "probe_cfg": probe_cfg_from_yaml(cfg),
+            "finetune": True,
+            "best_checkpoint_metric": best_ckpt_metric,
+        }
         save_checkpoint(ckpt_dir / "last.pt", payload)
         improved_loss = val_loss < best_val_loss
         improved_acc = val_acc > best_val_acc

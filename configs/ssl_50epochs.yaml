@@ -1,0 +1,5 @@
+inherits: ["ssl.yaml"]
+
+experiment_name: "augpred_ssl_50ep"
+epochs: 50
+checkpoint_subdir: "checkpoints/ssl_ep50"

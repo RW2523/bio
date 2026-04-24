@@ -23,6 +23,22 @@ def resolve_path(p: str | Path) -> Path:
     return (project_root() / pp).resolve()
 
 
+def infer_artifacts_dir_from_checkpoint(checkpoint_path: str | Path) -> Path | None:
+    """
+    Find ``.../artifacts`` that belongs to the same experiment root as ``checkpoint_path``.
+
+    Walks ``checkpoint_path`` parents and returns the first directory where
+    ``artifacts/label_map.json`` exists (works for ``<root>/checkpoints/<run>/best.pt`` and
+    deeper checkpoint layouts).
+    """
+    p = Path(checkpoint_path).resolve()
+    for d in (p.parent, *p.parents):
+        cand = d / "artifacts"
+        if (cand / "label_map.json").is_file():
+            return cand
+    return None
+
+
 @dataclass(frozen=True)
 class NormStats:
     mean: np.ndarray

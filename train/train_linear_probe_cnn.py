@@ -39,6 +39,7 @@ from utils.assertions import assert_backbone_frozen, assert_backbone_no_stored_g
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.io import read_json, write_json
 from utils.logger import setup_logger
+from utils.training_curves import save_supervised_curves_png
 from utils.seed import set_seed
 from utils.yaml_config import load_merged_config
 
@@ -142,8 +143,16 @@ def main(default_config: str = "case1_probe_cnn") -> None:
         logger.info("Using lr_scheduler=%s on probe", str(cfg.get("lr_scheduler", "none")))
 
     max_grad_norm = float(cfg.get("max_grad_norm", 0.0))
-    best_val = float("inf")
-    curves: dict[str, list[float]] = {"train_loss": [], "val_loss": [], "val_acc": []}
+    best_ckpt_metric = str(cfg.get("best_checkpoint_metric", "val_loss")).strip().lower()
+    if best_ckpt_metric not in {"val_loss", "val_acc"}:
+        raise ValueError("best_checkpoint_metric must be 'val_loss' or 'val_acc'")
+    logger.info("Saving best.pt when %s improves; also saving best_val_loss.pt / best_val_acc.pt.", best_ckpt_metric)
+
+    best_val_loss = float("inf")
+    best_val_acc = -1.0
+    best_val_loss_epoch = 0
+    best_val_acc_epoch = 0
+    curves: dict[str, list[float]] = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
 
     def eval_loader(loader: DataLoader) -> tuple[float, float]:
         backbone.eval()
@@ -171,6 +180,8 @@ def main(default_config: str = "case1_probe_cnn") -> None:
         head.train()
         total = 0.0
         m = 0
+        train_correct = 0
+        train_count = 0
         for x, y, _w in train_loader:
             x = x.to(device)
             y = y.to(device)
@@ -178,7 +189,8 @@ def main(default_config: str = "case1_probe_cnn") -> None:
             opt.zero_grad(set_to_none=True)
             with torch.no_grad():
                 z = backbone(to_bct(x))
-            loss = crit(head(z), y)
+            logits = head(z)
+            loss = crit(logits, y)
             loss.backward()
             if not probe_grad_checked:
                 assert_backbone_no_stored_gradients(backbone)
@@ -190,16 +202,22 @@ def main(default_config: str = "case1_probe_cnn") -> None:
             opt.step()
             total += float(loss.detach().cpu())
             m += 1
+            pred = torch.argmax(logits.detach(), dim=-1)
+            train_correct += int((pred == y).sum().item())
+            train_count += int(y.numel())
 
         train_loss = total / max(m, 1)
+        train_acc = train_correct / max(train_count, 1)
         val_loss, val_acc = eval_loader(val_loader)
         curves["train_loss"].append(train_loss)
         curves["val_loss"].append(val_loss)
+        curves["train_acc"].append(train_acc)
         curves["val_acc"].append(val_acc)
         logger.info(
-            "epoch=%d train_loss=%.5f val_loss=%.5f val_acc=%.4f lr=%.2e",
+            "epoch=%d train_loss=%.5f train_acc=%.4f val_loss=%.5f val_acc=%.4f lr=%.2e",
             epoch,
             train_loss,
+            train_acc,
             val_loss,
             val_acc,
             float(opt.param_groups[0]["lr"]),
@@ -218,11 +236,31 @@ def main(default_config: str = "case1_probe_cnn") -> None:
             "probe_cfg": probe_cfg_from_yaml(cfg),
         }
         save_checkpoint(ckpt_dir / "last.pt", payload)
-        if val_loss < best_val:
-            best_val = val_loss
+        improved_loss = val_loss < best_val_loss
+        improved_acc = val_acc > best_val_acc
+        if improved_loss:
+            best_val_loss = val_loss
+            best_val_loss_epoch = epoch
+            save_checkpoint(ckpt_dir / "best_val_loss.pt", payload)
+        if improved_acc:
+            best_val_acc = val_acc
+            best_val_acc_epoch = epoch
+            save_checkpoint(ckpt_dir / "best_val_acc.pt", payload)
+        if (best_ckpt_metric == "val_acc" and improved_acc) or (best_ckpt_metric == "val_loss" and improved_loss):
             save_checkpoint(ckpt_dir / "best.pt", payload)
 
     write_json(ckpt_dir / "curves.json", curves)
+    write_json(
+        ckpt_dir / "best_epochs.json",
+        {
+            "best_val_loss": best_val_loss,
+            "best_val_loss_epoch": best_val_loss_epoch,
+            "best_val_acc": best_val_acc,
+            "best_val_acc_epoch": best_val_acc_epoch,
+            "best_checkpoint_metric": best_ckpt_metric,
+        },
+    )
+    save_supervised_curves_png(curves, ckpt_dir / "curves.png", title=str(cfg.get("experiment_name", "")))
 
 
 if __name__ == "__main__":

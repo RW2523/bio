@@ -1,0 +1,5 @@
+inherits: ["case1_probe.yaml"]
+
+experiment_name: "case1_ablation_no_weight_decay"
+weight_decay: 0.0
+checkpoint_subdir: "checkpoints/case1_ablation_no_weight_decay"

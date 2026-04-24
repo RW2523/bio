@@ -1,0 +1,5 @@
+inherits: ["case1_probe.yaml"]
+
+experiment_name: "cluster_case1_100ep"
+epochs: 100
+checkpoint_subdir: "checkpoints/cluster_case1"

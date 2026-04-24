@@ -35,6 +35,7 @@ from utils.assertions import assert_disjoint_subject_sets
 from utils.checkpoint import save_checkpoint
 from utils.io import read_json, write_json
 from utils.logger import setup_logger
+from utils.training_curves import save_ssl_loss_curves_png
 from utils.seed import set_seed
 from utils.yaml_config import load_merged_config
 
@@ -197,6 +198,7 @@ def main() -> None:
             )
 
     write_json(ckpt_dir / "curves.json", curves)
+    save_ssl_loss_curves_png(curves, ckpt_dir / "curves.png", title=str(cfg.get("experiment_name", "")))
     log_module_trainable(logger, "backbone", backbone)
     log_module_trainable(logger, "heads", heads)
 

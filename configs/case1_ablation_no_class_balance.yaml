@@ -1,0 +1,5 @@
+inherits: ["case1_probe.yaml"]
+
+experiment_name: "case1_ablation_no_class_balance"
+class_balanced_loss: false
+checkpoint_subdir: "checkpoints/case1_ablation_no_class_balance"

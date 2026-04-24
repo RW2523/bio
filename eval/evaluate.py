@@ -23,6 +23,7 @@ from sklearn.metrics import classification_report
 
 from train.common import (
     freeze_module,
+    infer_artifacts_dir_from_checkpoint,
     linear_probe_head_from_cfg,
     load_label_map,
     load_norm_stats,
@@ -47,7 +48,12 @@ def _resolve(p: str) -> Path:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", type=str, required=True, help="Path to `best.pt` from case1/case2 training")
+    ap.add_argument(
+        "--checkpoint",
+        type=str,
+        required=True,
+        help="Probe checkpoint (`best.pt`, or `best_val_acc.pt` / `best_val_loss.pt` after training)",
+    )
     ap.add_argument(
         "--artifacts_dir",
         type=str,
@@ -57,6 +63,7 @@ def main() -> None:
     ap.add_argument("--output_dir", type=str, default="outputs/eval_runs/default")
     ap.add_argument("--config", type=str, default="model", help="Fallback model YAML if checkpoint lacks `model_cfg`")
     ap.add_argument("--device", type=str, default="cuda", help="cuda (default), cpu, or e.g. cuda:1")
+    ap.add_argument("--batch_size", type=int, default=128, help="Test batch size")
     args = ap.parse_args()
 
     ckpt_path = _resolve(args.checkpoint)
@@ -72,11 +79,19 @@ def main() -> None:
     if args.artifacts_dir:
         art_dir = _resolve(args.artifacts_dir)
     else:
-        inferred = (ckpt_path.parents[2] / "artifacts").resolve()  # outputs/artifacts for outputs/checkpoints/<run>/best.pt
-        art_dir = inferred if inferred.exists() else _resolve("outputs/artifacts")
+        art_dir = infer_artifacts_dir_from_checkpoint(ckpt_path)
+        if art_dir is None:
+            for fb in (_resolve("outputs 2/artifacts"), _resolve("outputs/artifacts")):
+                if (fb / "label_map.json").is_file():
+                    art_dir = fb
+                    logger.warning("Checkpoint path did not contain artifacts/; using %s", art_dir)
+                    break
 
-    if not art_dir.exists():
-        raise FileNotFoundError(f"Artifacts directory not found: {art_dir}")
+    if art_dir is None or not art_dir.exists():
+        raise FileNotFoundError(
+            f"Artifacts directory not found (tried inferring from checkpoint and common fallbacks). "
+            f"Pass --artifacts_dir explicitly. Checkpoint was: {ckpt_path}"
+        )
 
     out_root = art_dir.parent
     cache_dir = out_root / "cache" / "wisdm_windows"
@@ -95,9 +110,10 @@ def main() -> None:
 
     norm = load_norm_stats(art_dir)
     test_ds = WISDMSupervisedDataset(cache_dir, test_ids, mean=norm.mean, std=norm.std)
+    bs = max(1, int(args.batch_size))
     loader = DataLoader(
         test_ds,
-        batch_size=128,
+        batch_size=bs,
         shuffle=False,
         num_workers=0,
         pin_memory=device.type == "cuda",
@@ -136,6 +152,9 @@ def main() -> None:
     y_pred = np.asarray(ps, dtype=np.int64)
 
     metrics = compute_metrics(y_true, y_pred, labels=labels)
+    metrics["eval_checkpoint_path"] = str(ckpt_path)
+    metrics["artifacts_dir"] = str(art_dir.resolve())
+    metrics["test_batch_size"] = bs
     write_json(out_dir / "metrics.json", metrics)
 
     report_txt = classification_report(

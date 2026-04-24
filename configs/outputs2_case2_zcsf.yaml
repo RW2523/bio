@@ -1,0 +1,3 @@
+inherits: ["case2_probe_snn_zcsf.yaml", "outputs2_paths.yaml"]
+
+experiment_name: "case2_zcsf_outputs2"

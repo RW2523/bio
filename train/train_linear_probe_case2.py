@@ -9,7 +9,6 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,17 +27,22 @@ from train.common import (
     load_splits,
     log_module_trainable,
     make_loader,
-    probe_cfg_from_yaml,
     resolve_compute_device,
     resolve_path,
     subject_split_ids,
     to_bct,
 )
+from train.frozen_linear_probe_loop import (
+    eval_frozen_backbone_probe,
+    snn_probe_checkpoint_payload,
+    train_one_epoch_frozen_backbone_probe,
+)
 from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
-from utils.assertions import assert_backbone_frozen, assert_backbone_no_stored_gradients, assert_disjoint_subject_sets, assert_label_range
+from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets, assert_label_range
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.io import read_json, write_json
 from utils.logger import setup_logger
+from utils.training_curves import save_supervised_curves_png
 from utils.seed import set_seed
 from utils.yaml_config import load_merged_config
 
@@ -147,67 +151,42 @@ def main() -> None:
 
     max_grad_norm = float(cfg.get("max_grad_norm", 0.0))
 
-    best_val = float("inf")
-    curves: dict[str, list[float]] = {"train_loss": [], "val_loss": [], "val_acc": []}
+    best_ckpt_metric = str(cfg.get("best_checkpoint_metric", "val_loss")).strip().lower()
+    if best_ckpt_metric not in {"val_loss", "val_acc"}:
+        raise ValueError("best_checkpoint_metric must be 'val_loss' or 'val_acc'")
+    logger.info("Saving best.pt when %s improves (lower loss or higher acc).", best_ckpt_metric)
 
-    def eval_loader(loader: DataLoader) -> tuple[float, float]:
-        backbone.eval()
-        head.eval()
-        tot = 0.0
-        n = 0
-        correct = 0
-        count = 0
-        with torch.no_grad():
-            for x, y, _w in loader:
-                x = x.to(device)
-                y = y.to(device)
-                z = backbone(to_bct(x))
-                logits = head(z)
-                loss = crit(logits, y)
-                tot += float(loss.detach().cpu())
-                n += 1
-                pred = torch.argmax(logits, dim=-1)
-                correct += int((pred == y).sum().item())
-                count += int(y.numel())
-        return tot / max(n, 1), correct / max(count, 1)
+    best_val_loss = float("inf")
+    best_val_acc = -1.0
+    best_val_loss_epoch = 0
+    best_val_acc_epoch = 0
+    curves: dict[str, list[float]] = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
 
     epochs = int(cfg["epochs"])
     probe_grad_checked = False
     for epoch in range(1, epochs + 1):
-        backbone.eval()
-        head.train()
-        total = 0.0
-        m = 0
-        for x, y, _w in train_loader:
-            x = x.to(device)
-            y = y.to(device)
-            assert_label_range(y, num_classes)
-            opt.zero_grad(set_to_none=True)
-            with torch.no_grad():
-                z = backbone(to_bct(x))
-            logits = head(z)
-            loss = crit(logits, y)
-            loss.backward()
-            if not probe_grad_checked:
-                assert_backbone_no_stored_gradients(backbone)
-                if not any(p.grad is not None and float(p.grad.detach().abs().sum()) > 0.0 for p in head.parameters()):
-                    raise AssertionError("Expected non-zero gradients on linear probe parameters.")
-                probe_grad_checked = True
-            if max_grad_norm > 0.0:
-                torch.nn.utils.clip_grad_norm_(head.parameters(), max_grad_norm)
-            opt.step()
-            total += float(loss.detach().cpu())
-            m += 1
-        train_loss = total / max(m, 1)
-        val_loss, val_acc = eval_loader(val_loader)
+        train_loss, train_acc, probe_grad_checked = train_one_epoch_frozen_backbone_probe(
+            backbone,
+            head,
+            train_loader,
+            opt,
+            crit,
+            device,
+            num_classes,
+            max_grad_norm,
+            probe_grad_checked,
+        )
+        val_loss, val_acc = eval_frozen_backbone_probe(backbone, head, val_loader, crit, device)
         curves["train_loss"].append(train_loss)
         curves["val_loss"].append(val_loss)
+        curves["train_acc"].append(train_acc)
         curves["val_acc"].append(val_acc)
         lr_now = float(opt.param_groups[0]["lr"])
         logger.info(
-            "epoch=%d train_loss=%.5f val_loss=%.5f val_acc=%.4f lr=%.2e",
+            "epoch=%d train_loss=%.5f train_acc=%.4f val_loss=%.5f val_acc=%.4f lr=%.2e",
             epoch,
             train_loss,
+            train_acc,
             val_loss,
             val_acc,
             lr_now,
@@ -215,22 +194,35 @@ def main() -> None:
         if scheduler is not None:
             scheduler.step()
 
-        payload = {
-            "epoch": epoch,
-            "backbone": backbone.state_dict(),
-            "head": head.state_dict(),
-            "optimizer": opt.state_dict(),
-            "model_cfg": model_cfg,
-            "backbone_type": "spiking_resnet1d",
-            "num_classes": num_classes,
-            "probe_cfg": probe_cfg_from_yaml(cfg),
-        }
+        payload = snn_probe_checkpoint_payload(
+            epoch, backbone, head, opt, model_cfg, num_classes, cfg, best_ckpt_metric
+        )
         save_checkpoint(ckpt_dir / "last.pt", payload)
-        if val_loss < best_val:
-            best_val = val_loss
+        improved_loss = val_loss < best_val_loss
+        improved_acc = val_acc > best_val_acc
+        if improved_loss:
+            best_val_loss = val_loss
+            best_val_loss_epoch = epoch
+            save_checkpoint(ckpt_dir / "best_val_loss.pt", payload)
+        if improved_acc:
+            best_val_acc = val_acc
+            best_val_acc_epoch = epoch
+            save_checkpoint(ckpt_dir / "best_val_acc.pt", payload)
+        if (best_ckpt_metric == "val_acc" and improved_acc) or (best_ckpt_metric == "val_loss" and improved_loss):
             save_checkpoint(ckpt_dir / "best.pt", payload)
 
     write_json(ckpt_dir / "curves.json", curves)
+    write_json(
+        ckpt_dir / "best_epochs.json",
+        {
+            "best_val_loss": best_val_loss,
+            "best_val_loss_epoch": best_val_loss_epoch,
+            "best_val_acc": best_val_acc,
+            "best_val_acc_epoch": best_val_acc_epoch,
+            "best_checkpoint_metric": best_ckpt_metric,
+        },
+    )
+    save_supervised_curves_png(curves, ckpt_dir / "curves.png", title=str(cfg.get("experiment_name", "")))
 
 
 if __name__ == "__main__":
