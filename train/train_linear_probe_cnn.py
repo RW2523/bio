@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
-from train.cnn_common import build_cnn_backbone, cnn_model_cfg_from_yaml
+from train.cnn_common import build_cnn_backbone, cnn_model_cfg_from_yaml, merge_cnn_model_cfg_from_checkpoint
 from train.common import (
     assert_optimizer_excludes_module,
     build_probe_criterion,
@@ -45,8 +45,15 @@ from utils.yaml_config import load_merged_config
 
 
 @torch.no_grad()
-def _smoke(backbone: nn.Module, head: nn.Module, device: torch.device, window_samples: int, num_classes: int) -> None:
-    x = torch.randn(2, window_samples, 3, device=device)
+def _smoke(
+    backbone: nn.Module,
+    head: nn.Module,
+    device: torch.device,
+    window_samples: int,
+    num_classes: int,
+    in_channels: int,
+) -> None:
+    x = torch.randn(2, window_samples, int(in_channels), device=device)
     logits = head(backbone(to_bct(x)))
     assert logits.shape == (2, num_classes)
 
@@ -76,9 +83,36 @@ def main(default_config: str = "case1_probe_cnn") -> None:
     label_map = load_label_map(art_dir)
     num_classes = int(label_map["num_classes"])
     norm = load_norm_stats(art_dir)
+    probe_yaml = probe_cfg_from_yaml(cfg)
 
-    train_ds = WISDMSupervisedDataset(cache_dir, train_ids, mean=norm.mean, std=norm.std)
-    val_ds = WISDMSupervisedDataset(cache_dir, val_ids, mean=norm.mean, std=norm.std)
+    window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
+    yaml_model_cfg = cnn_model_cfg_from_yaml(cfg)
+
+    pretrained_path = cfg.get("pretrained_backbone_path")
+    pretrained_path = resolve_path(str(pretrained_path)) if pretrained_path else None
+    if pretrained_path is not None and not pretrained_path.exists():
+        raise FileNotFoundError(f"Missing pretrained CNN backbone checkpoint: {pretrained_path}")
+
+    if pretrained_path is None:
+        model_cfg = yaml_model_cfg
+        backbone = build_cnn_backbone(model_cfg).to(device)
+        logger.info("Using randomly initialized CNN backbone.")
+    else:
+        bb_ckpt = load_checkpoint(pretrained_path, map_location=device)
+        model_cfg = merge_cnn_model_cfg_from_checkpoint(bb_ckpt.get("model_cfg"), cfg)
+        if bb_ckpt.get("backbone_type") not in {None, "cnn_resnet1d"}:
+            raise ValueError(f"Expected CNN backbone checkpoint, got backbone_type={bb_ckpt.get('backbone_type')!r}")
+        backbone = build_cnn_backbone(model_cfg).to(device)
+        backbone.load_state_dict(bb_ckpt["state_dict"], strict=True)
+        logger.info("Loaded pretrained CNN backbone from %s (epoch=%s)", pretrained_path, str(bb_ckpt.get("epoch")))
+        probe_yaml["feature_stack"] = list(model_cfg["feature_stack"])
+
+    train_ds = WISDMSupervisedDataset(
+        cache_dir, train_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
+    val_ds = WISDMSupervisedDataset(
+        cache_dir, val_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
 
     train_loader = make_loader(
         train_ds,
@@ -95,32 +129,11 @@ def main(default_config: str = "case1_probe_cnn") -> None:
         device=device,
     )
 
-    window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
-    yaml_model_cfg = cnn_model_cfg_from_yaml(cfg)
-
-    pretrained_path = cfg.get("pretrained_backbone_path")
-    pretrained_path = resolve_path(str(pretrained_path)) if pretrained_path else None
-    if pretrained_path is not None and not pretrained_path.exists():
-        raise FileNotFoundError(f"Missing pretrained CNN backbone checkpoint: {pretrained_path}")
-
-    if pretrained_path is None:
-        model_cfg = yaml_model_cfg
-        backbone = build_cnn_backbone(model_cfg).to(device)
-        logger.info("Using randomly initialized CNN backbone.")
-    else:
-        bb_ckpt = load_checkpoint(pretrained_path, map_location=device)
-        model_cfg = bb_ckpt.get("model_cfg", yaml_model_cfg)
-        if bb_ckpt.get("backbone_type") not in {None, "cnn_resnet1d"}:
-            raise ValueError(f"Expected CNN backbone checkpoint, got backbone_type={bb_ckpt.get('backbone_type')!r}")
-        backbone = build_cnn_backbone(model_cfg).to(device)
-        backbone.load_state_dict(bb_ckpt["state_dict"], strict=True)
-        logger.info("Loaded pretrained CNN backbone from %s (epoch=%s)", pretrained_path, str(bb_ckpt.get("epoch")))
-
     freeze_module(backbone)
     assert_backbone_frozen(backbone)
 
-    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, cfg).to(device)
-    _smoke(backbone, head, device, window_samples, num_classes)
+    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, probe_yaml).to(device)
+    _smoke(backbone, head, device, window_samples, num_classes, int(model_cfg["in_channels"]))
     logger.info("Smoke batch OK.")
     log_module_trainable(logger, "backbone", backbone)
     log_module_trainable(logger, "head", head)

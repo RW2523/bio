@@ -1,0 +1,28 @@
+# Exp 5 — Recommended stack: 9 ch, adaptive4, MLP head, motion-weighted CE, tuned LIF/surrogate.
+# Requires a compatible SSL `backbone_best.pt` (same feature_stack / in_channels / pooling width).
+inherits: ["case2_e2e_finetune.yaml"]
+
+experiment_name: "wisdm_perf_exp5_best_snn_finetune"
+
+feature_stack: ["raw", "delta", "window_std"]
+sensor_channels: 3
+in_channels: 9
+pooling: adaptive4
+classifier_head: mlp
+classifier_dropout: 0.3
+
+lif_threshold: 0.5
+lif_beta: 0.9
+surrogate_alpha: 5.0
+
+motion_loss_weighting: true
+motion_loss_alpha: 1.0
+
+finetune:
+  unfreeze_backbone: true
+  backbone_lr: 0.0001
+  head_lr: 0.001
+  weight_decay: 0.0001
+  early_stop_metric: macro_f1
+  motion_loss_weighting: true
+  motion_loss_alpha: 1.0

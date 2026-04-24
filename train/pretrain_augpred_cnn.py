@@ -39,11 +39,13 @@ from utils.training_curves import save_ssl_loss_curves_png
 from utils.seed import set_seed
 from utils.yaml_config import load_merged_config
 
+from train.ssl_debug import backbone_grad_norm_l2
+
 
 @torch.no_grad()
-def _smoke_batch(backbone: nn.Module, heads: AugPredSSLHeads, device: torch.device, window_samples: int) -> None:
+def _smoke_batch(backbone: nn.Module, heads: AugPredSSLHeads, device: torch.device, window_samples: int, in_channels: int) -> None:
     b = 2
-    x = torch.randn(b, window_samples, 3, device=device)
+    x = torch.randn(b, window_samples, int(in_channels), device=device)
     z = backbone(to_bct(x))
     assert z.ndim == 2 and z.shape[0] == b
     a, p, t = heads(z)
@@ -76,8 +78,13 @@ def main() -> None:
     label_map = load_label_map(art_dir)
     _ = int(label_map["num_classes"])
 
-    train_ds = WISDMSSLDataset(cache_dir, train_ids, mean=norm.mean, std=norm.std)
-    val_ds = WISDMSSLDataset(cache_dir, val_ids, mean=norm.mean, std=norm.std)
+    model_cfg = cnn_model_cfg_from_yaml(cfg)
+    train_ds = WISDMSSLDataset(
+        cache_dir, train_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
+    val_ds = WISDMSSLDataset(
+        cache_dir, val_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
 
     sampler = build_weighted_sampler(
         train_ds.motions,
@@ -105,11 +112,10 @@ def main() -> None:
     )
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
-    model_cfg = cnn_model_cfg_from_yaml(cfg)
     backbone = build_cnn_backbone(model_cfg).to(device)
     heads = AugPredSSLHeads(backbone.out_dim).to(device)
 
-    _smoke_batch(backbone, heads, device, window_samples)
+    _smoke_batch(backbone, heads, device, window_samples, int(model_cfg["in_channels"]))
     logger.info("Smoke batch OK.")
 
     opt = torch.optim.Adam(
@@ -120,6 +126,10 @@ def main() -> None:
     crit = nn.BCEWithLogitsLoss()
     best_val = float("inf")
     curves: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
+
+    dbg = cfg.get("debug") or {}
+    dbg = dbg if isinstance(dbg, dict) else {}
+    log_gn = bool(dbg.get("log_grad_norm", False))
 
     def ssl_step(x_btc: torch.Tensor) -> torch.Tensor:
         x_btc = x_btc.to(device)
@@ -136,10 +146,13 @@ def main() -> None:
         heads.train()
         total = 0.0
         n = 0
+        max_gn = 0.0
         for x, _w in train_loader:
             opt.zero_grad(set_to_none=True)
             loss = ssl_step(x)
             loss.backward()
+            if log_gn:
+                max_gn = max(max_gn, backbone_grad_norm_l2(backbone))
             opt.step()
             total += float(loss.detach().cpu())
             n += 1
@@ -157,6 +170,8 @@ def main() -> None:
         val_loss = vtot / max(vn, 1)
         curves["val_loss"].append(val_loss)
         logger.info("epoch=%d train_loss=%.5f val_loss=%.5f", epoch, train_loss, val_loss)
+        if log_gn:
+            logger.info("epoch=%d backbone_grad_norm_max=%.6f", epoch, max_gn)
 
         payload = {
             "epoch": epoch,

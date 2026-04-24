@@ -1,0 +1,11 @@
+# Exp 2 — Richer input (raw + delta + window_std). Requires SSL trained with 9 input channels.
+inherits: ["case2_e2e_finetune.yaml"]
+
+experiment_name: "wisdm_perf_exp2_better_input"
+
+feature_stack: ["raw", "delta", "window_std"]
+sensor_channels: 3
+in_channels: 9
+pooling: mean
+pool_bins: 1
+classifier_head: linear

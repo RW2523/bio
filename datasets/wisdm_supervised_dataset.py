@@ -10,6 +10,8 @@ from torch.utils.data import Dataset
 
 from data_tools.normalization import normalize_windows
 
+from datasets.window_features import normalize_feature_stack, stack_window_features
+
 
 class WISDMSupervisedDataset(Dataset):
     """
@@ -25,11 +27,14 @@ class WISDMSupervisedDataset(Dataset):
         subject_ids: list[int],
         mean: np.ndarray,
         std: np.ndarray,
+        *,
+        feature_stack: list[str] | str | None = None,
     ) -> None:
         super().__init__()
         self.cache_dir = Path(cache_dir)
         self.mean = mean.astype(np.float32, copy=False)
         self.std = std.astype(np.float32, copy=False)
+        self.feature_stack: list[str] = normalize_feature_stack(feature_stack)
 
         parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         expected_c = int(mean.shape[0])
@@ -81,7 +86,8 @@ class WISDMSupervisedDataset(Dataset):
         local = int(idx - self.cumlen[part_idx])
         X, y, motion = self.parts[part_idx]
         x = normalize_windows(X[local : local + 1], self.mean, self.std)[0]
-        x_t = torch.from_numpy(x)  # [T, C]
+        x = stack_window_features(x, self.feature_stack)
+        x_t = torch.from_numpy(np.ascontiguousarray(x))  # [T, C_out]
         y_t = torch.tensor(int(y[local]), dtype=torch.long)
         w_t = torch.tensor(float(motion[local]), dtype=torch.float32)
         return x_t, y_t, w_t

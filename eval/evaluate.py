@@ -28,11 +28,12 @@ from train.common import (
     load_label_map,
     load_norm_stats,
     load_splits,
+    probe_cfg_from_checkpoint,
     resolve_compute_device,
     subject_split_ids,
     to_bct,
 )
-from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
+from train.snn_common import build_snn_backbone, merge_snn_model_cfg_from_checkpoint
 from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets
 from utils.checkpoint import load_checkpoint
 from utils.io import write_json
@@ -109,7 +110,15 @@ def main() -> None:
     labels = list(range(num_classes))
 
     norm = load_norm_stats(art_dir)
-    test_ds = WISDMSupervisedDataset(cache_dir, test_ids, mean=norm.mean, std=norm.std)
+    yaml_cfg = load_merged_config(args.config)
+    probe_cfg = probe_cfg_from_checkpoint(ckpt, yaml_cfg)
+    test_ds = WISDMSupervisedDataset(
+        cache_dir,
+        test_ids,
+        mean=norm.mean,
+        std=norm.std,
+        feature_stack=probe_cfg["feature_stack"],
+    )
     bs = max(1, int(args.batch_size))
     loader = DataLoader(
         test_ds,
@@ -119,14 +128,11 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
 
-    model_cfg = ckpt.get("model_cfg")
-    if model_cfg is None:
-        cfg = load_merged_config(args.config)
-        model_cfg = snn_model_cfg_from_yaml(cfg)
-        logger.warning("Checkpoint missing `model_cfg`; rebuilt architecture from `--config %s`.", args.config)
+    model_cfg = merge_snn_model_cfg_from_checkpoint(ckpt.get("model_cfg"), yaml_cfg)
+    if ckpt.get("model_cfg") is None:
+        logger.warning("Checkpoint missing `model_cfg`; merged defaults from `--config %s`.", args.config)
 
     backbone = build_snn_backbone(model_cfg).to(device)
-    probe_cfg = ckpt.get("probe_cfg") or {}
     head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, probe_cfg).to(device)
 
     backbone.load_state_dict(ckpt["backbone"], strict=True)

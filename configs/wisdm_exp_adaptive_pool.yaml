@@ -1,0 +1,10 @@
+# WISDM experiment 4: adaptive temporal pooling (wider embedding, C=3 unchanged).
+inherits: ["model.yaml"]
+
+experiment_name: "wisdm_adaptive_pool4"
+
+feature_stack: ["raw"]
+sensor_channels: 3
+in_channels: 3
+pooling: adaptive
+pool_bins: 4

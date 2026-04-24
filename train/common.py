@@ -12,6 +12,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch.optim import Optimizer
 
+import torch.nn.functional as F
+
+from datasets.window_features import normalize_feature_stack
 from utils.io import read_json
 from utils.paths import project_root
 
@@ -139,19 +142,81 @@ def make_loader(
     )
 
 
+def normalize_classifier_head(value: Any) -> str:
+    k = str(value or "linear").strip().lower()
+    if k not in {"linear", "mlp"}:
+        raise ValueError(f"classifier_head must be 'linear' or 'mlp', got {value!r}")
+    return k
+
+
 def probe_cfg_from_yaml(cfg: Mapping[str, Any]) -> dict[str, Any]:
-    """Subset of YAML saved in checkpoints so `eval/evaluate.py` can rebuild the same head."""
-    return {"probe_embedding_batchnorm": bool(cfg.get("probe_embedding_batchnorm", False))}
+    """Subset of YAML saved in checkpoints so `eval/evaluate.py` can rebuild the same head + input stacking."""
+    return {
+        "probe_embedding_batchnorm": bool(cfg.get("probe_embedding_batchnorm", False)),
+        "feature_stack": normalize_feature_stack(cfg.get("feature_stack")),
+        "classifier_head": normalize_classifier_head(cfg.get("classifier_head", "linear")),
+        "classifier_dropout": float(cfg.get("classifier_dropout", 0.3)),
+    }
+
+
+def probe_cfg_from_checkpoint(ckpt: Mapping[str, Any], train_cfg: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Merge checkpoint ``probe_cfg`` with defaults from training YAML (if any)."""
+    base = (
+        probe_cfg_from_yaml(train_cfg)
+        if train_cfg is not None
+        else {
+            "probe_embedding_batchnorm": False,
+            "feature_stack": normalize_feature_stack(None),
+            "classifier_head": "linear",
+            "classifier_dropout": 0.3,
+        }
+    )
+    merged = {**base, **dict(ckpt.get("probe_cfg") or {})}
+    merged["feature_stack"] = normalize_feature_stack(merged.get("feature_stack"))
+    merged["classifier_head"] = normalize_classifier_head(merged.get("classifier_head", "linear"))
+    merged["classifier_dropout"] = float(merged.get("classifier_dropout", 0.3))
+    return merged
 
 
 def linear_probe_head_from_cfg(in_dim: int, num_classes: int, cfg: Mapping[str, Any]) -> nn.Module:
-    from models.linear_probe import LinearProbeHead
+    from models.linear_probe import LinearProbeHead, MLPProbeHead
 
-    return LinearProbeHead(
-        in_dim,
-        num_classes=num_classes,
-        embedding_batchnorm=bool(cfg.get("probe_embedding_batchnorm", False)),
+    eb = bool(cfg.get("probe_embedding_batchnorm", False))
+    if normalize_classifier_head(cfg.get("classifier_head", "linear")) == "mlp":
+        return MLPProbeHead(
+            in_dim,
+            num_classes=num_classes,
+            embedding_batchnorm=eb,
+            dropout=float(cfg.get("classifier_dropout", 0.3)),
+        )
+    return LinearProbeHead(in_dim, num_classes=num_classes, embedding_batchnorm=eb)
+
+
+def motion_weighted_cross_entropy(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    motion: torch.Tensor,
+    *,
+    alpha: float,
+    crit: nn.CrossEntropyLoss,
+) -> torch.Tensor:
+    """
+    Mean per-sample CE weighted by ``1 + alpha * motion_norm`` where ``motion_norm`` is motion
+    divided by batch mean (per user spec).
+    """
+    ls = float(getattr(crit, "label_smoothing", 0.0))
+    w_cls = getattr(crit, "weight", None)
+    ce = F.cross_entropy(
+        logits,
+        targets,
+        weight=w_cls,
+        label_smoothing=ls,
+        reduction="none",
     )
+    m = motion.float().reshape(-1)
+    mn = m / (m.mean() + 1e-6)
+    sample_w = 1.0 + float(alpha) * mn
+    return (ce * sample_w).mean()
 
 
 def balanced_class_weights(counts: torch.Tensor) -> torch.Tensor:

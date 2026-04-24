@@ -1,0 +1,17 @@
+# WISDM experiment 5: full stack + adaptive pool for Case-2-style E2E fine-tune.
+# Requires an SSL backbone trained with the same feature_stack / in_channels; a 3-channel
+# SSL checkpoint cannot load into this architecture without retraining SSL.
+inherits: ["case2_e2e_finetune.yaml"]
+
+experiment_name: "wisdm_best_stack_adaptive_e2e"
+
+feature_stack: ["raw", "delta", "window_std"]
+sensor_channels: 3
+in_channels: 9
+pooling: adaptive
+pool_bins: 4
+
+best_checkpoint_metric: "val_macro_f1"
+early_stop_patience: 10
+head_lr: 0.001
+backbone_lr: 0.0001

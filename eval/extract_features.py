@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
 from train.common import freeze_module, load_norm_stats, load_splits, resolve_compute_device, to_bct
-from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
+from train.snn_common import build_snn_backbone, merge_snn_model_cfg_from_checkpoint
 from utils.assertions import assert_backbone_frozen
 from utils.checkpoint import load_checkpoint
 from utils.paths import project_root
@@ -49,14 +49,14 @@ def main() -> None:
     ids = [int(x) for x in splits[args.split]]
 
     norm = load_norm_stats(art_dir)
-    ds = WISDMSupervisedDataset(cache_dir, ids, mean=norm.mean, std=norm.std)
-    loader = DataLoader(ds, batch_size=128, shuffle=False, num_workers=0, pin_memory=device.type == "cuda")
-
+    yaml_cfg = load_merged_config(args.config)
     ckpt = load_checkpoint(_resolve(args.backbone_checkpoint), map_location=device)
-    model_cfg = ckpt.get("model_cfg")
-    if model_cfg is None:
-        cfg = load_merged_config(args.config)
-        model_cfg = snn_model_cfg_from_yaml(cfg)
+    model_cfg = merge_snn_model_cfg_from_checkpoint(ckpt.get("model_cfg"), yaml_cfg)
+
+    ds = WISDMSupervisedDataset(
+        cache_dir, ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
+    loader = DataLoader(ds, batch_size=128, shuffle=False, num_workers=0, pin_memory=device.type == "cuda")
 
     backbone = build_snn_backbone(model_cfg).to(device)
     if "state_dict" in ckpt:

@@ -1,0 +1,8 @@
+# WISDM experiment 2: raw + temporal first difference (6 channels).
+inherits: ["model.yaml"]
+
+experiment_name: "wisdm_raw_delta"
+
+feature_stack: ["raw", "delta"]
+sensor_channels: 3
+in_channels: 6

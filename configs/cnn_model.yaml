@@ -3,6 +3,19 @@
 input_layout: "BCT"
 backbone_type: "cnn_resnet1d"
 
+sensor_channels: 3
+feature_stack: ["raw"]
+# mean | adaptive + pool_bins | adaptive4 | attention (same semantics as model.yaml)
+pooling: mean
+pool_bins: 1
+
+classifier_head: linear
+classifier_dropout: 0.3
+
+debug:
+  log_spike_rate: false
+  log_grad_norm: false
+
 in_channels: 3
 base_channels: 32
 layers: [1, 1, 2]

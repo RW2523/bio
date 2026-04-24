@@ -24,8 +24,8 @@ from sklearn.metrics import silhouette_score
 from umap import UMAP
 
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
-from train.common import load_label_map, load_norm_stats, load_splits, resolve_compute_device, resolve_path, subject_split_ids, to_bct
-from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
+from train.common import load_norm_stats, load_splits, resolve_compute_device, resolve_path, subject_split_ids, to_bct
+from train.snn_common import build_snn_backbone, merge_snn_model_cfg_from_checkpoint
 from utils.checkpoint import load_checkpoint
 from utils.io import read_json
 from utils.paths import project_root
@@ -80,18 +80,21 @@ def main() -> None:
     train_ids, val_ids, test_ids = subject_split_ids(splits)
     ids = {"train": train_ids, "val": val_ids, "test": test_ids}[args.split]
 
-    label_map = load_label_map(art_dir)
-    num_classes = int(label_map["num_classes"])
     norm = load_norm_stats(art_dir)
-    ds = WISDMSupervisedDataset(cache_dir, ids, mean=norm.mean, std=norm.std)
-    loader = DataLoader(ds, batch_size=128, shuffle=True, num_workers=0, pin_memory=device.type == "cuda")
 
     yaml_cfg = load_merged_config(args.config)
-    model_cfg = snn_model_cfg_from_yaml(yaml_cfg)
+    ssl_path = _resolve(args.ssl_backbone_ckpt)
+    ck_ssl = load_checkpoint(ssl_path, map_location=device)
+    model_cfg_ssl = merge_snn_model_cfg_from_checkpoint(ck_ssl.get("model_cfg"), yaml_cfg)
+
+    ds = WISDMSupervisedDataset(
+        cache_dir, ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg_ssl["feature_stack"]
+    )
+    loader = DataLoader(ds, batch_size=128, shuffle=True, num_workers=0, pin_memory=device.type == "cuda")
 
     def load_bb(path: Path) -> torch.nn.Module:
         ck = load_checkpoint(path, map_location=device)
-        mc = ck.get("model_cfg", model_cfg)
+        mc = merge_snn_model_cfg_from_checkpoint(ck.get("model_cfg"), yaml_cfg)
         bb = build_snn_backbone(mc).to(device)
         if "state_dict" in ck:
             bb.load_state_dict(ck["state_dict"], strict=True)
@@ -101,12 +104,20 @@ def main() -> None:
             raise ValueError(f"Checkpoint {path} needs `state_dict` (SSL) or `backbone` (probe) weights.")
         return bb
 
-    ssl_bb = load_bb(_resolve(args.ssl_backbone_ckpt))
+    ssl_bb = load_bb(ssl_path)
 
     if args.random_backbone_ckpt:
-        rand_bb = load_bb(_resolve(args.random_backbone_ckpt))
+        rand_path = _resolve(args.random_backbone_ckpt)
+        ck_rand = load_checkpoint(rand_path, map_location=device)
+        model_cfg_rand = merge_snn_model_cfg_from_checkpoint(ck_rand.get("model_cfg"), yaml_cfg)
+        if int(model_cfg_rand["in_channels"]) != int(model_cfg_ssl["in_channels"]):
+            raise ValueError(
+                f"Random backbone in_channels={model_cfg_rand['in_channels']} != SSL "
+                f"in_channels={model_cfg_ssl['in_channels']} (check checkpoints and --config)."
+            )
+        rand_bb = load_bb(rand_path)
     else:
-        rand_bb = build_snn_backbone(model_cfg).to(device)
+        rand_bb = build_snn_backbone(model_cfg_ssl).to(device)
 
     z_r, y_r = _embed_backbone(rand_bb, loader, device, args.max_batches)
     z_s, y_s = _embed_backbone(ssl_bb, loader, device, args.max_batches)

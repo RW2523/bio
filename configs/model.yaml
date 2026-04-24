@@ -1,8 +1,34 @@
 # Input layout for conv backbone: "BCT" => [B, C, T]
 input_layout: "BCT"
 
+# Raw sensor channels per timestep before optional stacking (accel xyz = 3).
+sensor_channels: 3
+
+# Optional post-normalization stacking: raw | delta | window_std (see datasets/window_features.py).
+# in_channels must match len(feature_stack) * sensor_channels (enforced in snn_model_cfg_from_yaml).
+feature_stack: ["raw"]
+
+# Temporal pooling after the conv trunk:
+#   mean — global average [B,D]
+#   adaptive + pool_bins>1 — AdaptiveAvgPool1d (e.g. adaptive4 = 4 bins) [B, D*pool_bins]
+#   attention — softmax-weighted sum over time [B,D]
+pooling: mean
+pool_bins: 1
+
+# SNN dynamics (tune firing / gradients; see debug.log_spike_rate for proxy health hints).
+# Suggested sweeps: lif_threshold [0.3, 0.5, 1.0], lif_beta [0.7, 0.9, 0.95], surrogate_alpha [2, 5, 10].
+
+# Classifier for linear probe / E2E head (see models/linear_probe.py).
+classifier_head: linear
+classifier_dropout: 0.3
+
 # Inertial channels (accel xyz = 3; gyro xyz = 3)
 in_channels: 3
+
+# Optional diagnostics (SSL pretrain and E2E fine-tune read these when present).
+debug:
+  log_spike_rate: false
+  log_grad_norm: false
 
 # Spiking ResNet-1D (moderate default)
 base_channels: 32

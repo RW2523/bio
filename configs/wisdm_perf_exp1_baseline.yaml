@@ -1,0 +1,11 @@
+# Exp 1 — Baseline: raw only, mean pool, linear head.
+inherits: ["case2_e2e_finetune.yaml"]
+
+experiment_name: "wisdm_perf_exp1_baseline"
+
+feature_stack: ["raw"]
+sensor_channels: 3
+in_channels: 3
+pooling: mean
+pool_bins: 1
+classifier_head: linear

@@ -1,0 +1,8 @@
+# WISDM experiment 3: raw + delta + per-window channel std broadcast (9 channels).
+inherits: ["model.yaml"]
+
+experiment_name: "wisdm_raw_delta_window_std"
+
+feature_stack: ["raw", "delta", "window_std"]
+sensor_channels: 3
+in_channels: 9

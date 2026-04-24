@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from datasets.window_features import normalize_feature_stack
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
 from eval.metrics import compute_metrics
 from train.common import load_label_map, load_norm_stats, load_splits, make_loader, resolve_compute_device, resolve_path, subject_split_ids, to_bct
@@ -77,10 +78,18 @@ def main() -> None:
     label_map = load_label_map(art_dir)
     num_classes = int(label_map["num_classes"])
     norm = load_norm_stats(art_dir)
+    # TinyCNN1d is fixed at 3 accel channels; keep windows raw-only regardless of global YAML.
+    _raw_stack = normalize_feature_stack(["raw"])
 
-    train_ds = WISDMSupervisedDataset(cache_dir, train_ids, mean=norm.mean, std=norm.std)
-    val_ds = WISDMSupervisedDataset(cache_dir, val_ids, mean=norm.mean, std=norm.std)
-    test_ds = WISDMSupervisedDataset(cache_dir, test_ids, mean=norm.mean, std=norm.std)
+    train_ds = WISDMSupervisedDataset(
+        cache_dir, train_ids, mean=norm.mean, std=norm.std, feature_stack=_raw_stack
+    )
+    val_ds = WISDMSupervisedDataset(
+        cache_dir, val_ids, mean=norm.mean, std=norm.std, feature_stack=_raw_stack
+    )
+    test_ds = WISDMSupervisedDataset(
+        cache_dir, test_ids, mean=norm.mean, std=norm.std, feature_stack=_raw_stack
+    )
 
     train_loader = make_loader(
         train_ds,

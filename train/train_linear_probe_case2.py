@@ -27,6 +27,7 @@ from train.common import (
     load_splits,
     log_module_trainable,
     make_loader,
+    probe_cfg_from_yaml,
     resolve_compute_device,
     resolve_path,
     subject_split_ids,
@@ -37,7 +38,7 @@ from train.frozen_linear_probe_loop import (
     snn_probe_checkpoint_payload,
     train_one_epoch_frozen_backbone_probe,
 )
-from train.snn_common import build_snn_backbone, snn_model_cfg_from_yaml
+from train.snn_common import build_snn_backbone, merge_snn_model_cfg_from_checkpoint, snn_model_cfg_from_yaml
 from utils.assertions import assert_backbone_frozen, assert_disjoint_subject_sets, assert_label_range
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.io import read_json, write_json
@@ -48,9 +49,16 @@ from utils.yaml_config import load_merged_config
 
 
 @torch.no_grad()
-def _smoke(backbone: nn.Module, head: nn.Module, device: torch.device, window_samples: int, num_classes: int) -> None:
+def _smoke(
+    backbone: nn.Module,
+    head: nn.Module,
+    device: torch.device,
+    window_samples: int,
+    num_classes: int,
+    in_channels: int,
+) -> None:
     b = 2
-    x = torch.randn(b, window_samples, 3, device=device)
+    x = torch.randn(b, window_samples, int(in_channels), device=device)
     z = backbone(to_bct(x))
     logits = head(z)
     assert logits.shape == (b, num_classes)
@@ -89,8 +97,21 @@ def main() -> None:
     num_classes = int(label_map["num_classes"])
     norm = load_norm_stats(art_dir)
 
-    train_ds = WISDMSupervisedDataset(cache_dir, train_ids, mean=norm.mean, std=norm.std)
-    val_ds = WISDMSupervisedDataset(cache_dir, val_ids, mean=norm.mean, std=norm.std)
+    yaml_model_cfg = snn_model_cfg_from_yaml(cfg)
+    bb_ckpt = load_checkpoint(bb_path, map_location=device)
+    model_cfg = merge_snn_model_cfg_from_checkpoint(bb_ckpt.get("model_cfg"), cfg)
+    if bb_ckpt.get("model_cfg") is not None and bb_ckpt["model_cfg"] != yaml_model_cfg:
+        logger.warning("Using `model_cfg` embedded in SSL backbone checkpoint (merged with current YAML defaults).")
+
+    probe_yaml = probe_cfg_from_yaml(cfg)
+    probe_yaml["feature_stack"] = list(model_cfg["feature_stack"])
+
+    train_ds = WISDMSupervisedDataset(
+        cache_dir, train_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
+    val_ds = WISDMSupervisedDataset(
+        cache_dir, val_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
 
     train_loader = make_loader(
         train_ds,
@@ -109,13 +130,6 @@ def main() -> None:
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
 
-    yaml_model_cfg = snn_model_cfg_from_yaml(cfg)
-
-    bb_ckpt = load_checkpoint(bb_path, map_location=device)
-    model_cfg = bb_ckpt.get("model_cfg", yaml_model_cfg)
-    if bb_ckpt.get("model_cfg") is not None and bb_ckpt["model_cfg"] != yaml_model_cfg:
-        logger.warning("Using `model_cfg` embedded in SSL backbone checkpoint (differs from current YAML).")
-
     backbone = build_snn_backbone(model_cfg).to(device)
 
     backbone.load_state_dict(bb_ckpt["state_dict"], strict=True)
@@ -124,9 +138,9 @@ def main() -> None:
     freeze_module(backbone)
     assert_backbone_frozen(backbone)
 
-    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, cfg).to(device)
+    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, probe_yaml).to(device)
 
-    _smoke(backbone, head, device, window_samples, num_classes)
+    _smoke(backbone, head, device, window_samples, num_classes, int(model_cfg["in_channels"]))
     logger.info("Smoke batch OK.")
 
     log_module_trainable(logger, "backbone", backbone)
@@ -155,6 +169,9 @@ def main() -> None:
     if best_ckpt_metric not in {"val_loss", "val_acc"}:
         raise ValueError("best_checkpoint_metric must be 'val_loss' or 'val_acc'")
     logger.info("Saving best.pt when %s improves (lower loss or higher acc).", best_ckpt_metric)
+    motion_w = bool(cfg.get("motion_loss_weighting", False))
+    motion_alpha = float(cfg.get("motion_loss_alpha", 1.0))
+    logger.info("Motion-aware CE (frozen probe): enabled=%s alpha=%.4f", motion_w, motion_alpha)
 
     best_val_loss = float("inf")
     best_val_acc = -1.0
@@ -175,8 +192,18 @@ def main() -> None:
             num_classes,
             max_grad_norm,
             probe_grad_checked,
+            motion_loss_weighting=motion_w,
+            motion_loss_alpha=motion_alpha,
         )
-        val_loss, val_acc = eval_frozen_backbone_probe(backbone, head, val_loader, crit, device)
+        val_loss, val_acc = eval_frozen_backbone_probe(
+            backbone,
+            head,
+            val_loader,
+            crit,
+            device,
+            motion_loss_weighting=motion_w,
+            motion_loss_alpha=motion_alpha,
+        )
         curves["train_loss"].append(train_loss)
         curves["val_loss"].append(val_loss)
         curves["train_acc"].append(train_acc)
@@ -195,7 +222,15 @@ def main() -> None:
             scheduler.step()
 
         payload = snn_probe_checkpoint_payload(
-            epoch, backbone, head, opt, model_cfg, num_classes, cfg, best_ckpt_metric
+            epoch,
+            backbone,
+            head,
+            opt,
+            model_cfg,
+            num_classes,
+            cfg,
+            best_ckpt_metric,
+            probe_cfg_saved=probe_yaml,
         )
         save_checkpoint(ckpt_dir / "last.pt", payload)
         improved_loss = val_loss < best_val_loss

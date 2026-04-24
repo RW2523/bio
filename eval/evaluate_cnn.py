@@ -20,13 +20,14 @@ if str(ROOT) not in sys.path:
 from datasets.wisdm_supervised_dataset import WISDMSupervisedDataset
 from eval.confusion_matrix import save_confusion_matrix_figure
 from eval.metrics import compute_metrics
-from train.cnn_common import build_cnn_backbone, cnn_model_cfg_from_yaml
+from train.cnn_common import build_cnn_backbone, merge_cnn_model_cfg_from_checkpoint
 from train.common import (
     freeze_module,
     linear_probe_head_from_cfg,
     load_label_map,
     load_norm_stats,
     load_splits,
+    probe_cfg_from_checkpoint,
     resolve_compute_device,
     subject_split_ids,
     to_bct,
@@ -89,16 +90,19 @@ def main() -> None:
     labels = list(range(num_classes))
 
     norm = load_norm_stats(art_dir)
-    test_ds = WISDMSupervisedDataset(cache_dir, test_ids, mean=norm.mean, std=norm.std)
+    yaml_cfg = load_merged_config(args.config)
+    model_cfg = merge_cnn_model_cfg_from_checkpoint(ckpt.get("model_cfg"), yaml_cfg)
+    if ckpt.get("model_cfg") is None:
+        logger.warning("Checkpoint missing `model_cfg`; merged CNN architecture from `--config %s`.", args.config)
+    probe_yaml = probe_cfg_from_checkpoint(ckpt, yaml_cfg)
+
+    test_ds = WISDMSupervisedDataset(
+        cache_dir, test_ids, mean=norm.mean, std=norm.std, feature_stack=probe_yaml["feature_stack"]
+    )
     loader = DataLoader(test_ds, batch_size=128, shuffle=False, num_workers=0, pin_memory=device.type == "cuda")
 
-    model_cfg = ckpt.get("model_cfg")
-    if model_cfg is None:
-        model_cfg = cnn_model_cfg_from_yaml(load_merged_config(args.config))
-        logger.warning("Checkpoint missing `model_cfg`; rebuilt CNN architecture from `--config %s`.", args.config)
-
     backbone = build_cnn_backbone(model_cfg).to(device)
-    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, ckpt.get("probe_cfg") or {}).to(device)
+    head = linear_probe_head_from_cfg(backbone.out_dim, num_classes, probe_yaml).to(device)
     backbone.load_state_dict(ckpt["backbone"], strict=True)
     head.load_state_dict(ckpt["head"], strict=True)
 

@@ -1,0 +1,10 @@
+# WISDM experiment 1: baseline (matches historical defaults).
+inherits: ["model.yaml"]
+
+experiment_name: "wisdm_baseline_raw_meanpool"
+
+feature_stack: ["raw"]
+sensor_channels: 3
+in_channels: 3
+pooling: mean
+pool_bins: 1

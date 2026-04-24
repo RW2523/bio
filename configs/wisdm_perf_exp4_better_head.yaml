@@ -1,0 +1,11 @@
+# Exp 4 — 9 ch + adaptive4 + MLP classifier head.
+inherits: ["case2_e2e_finetune.yaml"]
+
+experiment_name: "wisdm_perf_exp4_better_head"
+
+feature_stack: ["raw", "delta", "window_std"]
+sensor_channels: 3
+in_channels: 9
+pooling: adaptive4
+classifier_head: mlp
+classifier_dropout: 0.3

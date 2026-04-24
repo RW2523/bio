@@ -39,10 +39,12 @@ from utils.training_curves import save_ssl_loss_curves_png
 from utils.seed import set_seed
 from utils.yaml_config import load_merged_config
 
+from train.ssl_debug import backbone_grad_norm_l2, read_spike_mean_from_snn, spike_mean_proxy_health_note
 
-def _smoke_batch(backbone: nn.Module, heads: AugPredSSLHeads, device: torch.device, window_samples: int) -> None:
+
+def _smoke_batch(backbone: nn.Module, heads: AugPredSSLHeads, device: torch.device, window_samples: int, in_channels: int) -> None:
     b = 2
-    c = 3
+    c = int(in_channels)
     x = torch.randn(b, window_samples, c, device=device)
     xb = to_bct(x)
     z = backbone(xb)
@@ -78,8 +80,13 @@ def main() -> None:
     num_classes = int(label_map["num_classes"])
     _ = num_classes  # unused here but validates artifact presence
 
-    train_ds = WISDMSSLDataset(cache_dir, train_ids, mean=norm.mean, std=norm.std)
-    val_ds = WISDMSSLDataset(cache_dir, val_ids, mean=norm.mean, std=norm.std)
+    model_cfg = snn_model_cfg_from_yaml(cfg)
+    train_ds = WISDMSSLDataset(
+        cache_dir, train_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
+    val_ds = WISDMSSLDataset(
+        cache_dir, val_ids, mean=norm.mean, std=norm.std, feature_stack=model_cfg["feature_stack"]
+    )
 
     sampler = build_weighted_sampler(
         train_ds.motions,
@@ -112,11 +119,10 @@ def main() -> None:
 
     window_samples = int(read_json(art_dir / "preprocess_run.json")["window_samples"])
 
-    model_cfg = snn_model_cfg_from_yaml(cfg)
     backbone = build_snn_backbone(model_cfg).to(device)
     heads = AugPredSSLHeads(backbone.out_dim).to(device)
 
-    _smoke_batch(backbone, heads, device, window_samples)
+    _smoke_batch(backbone, heads, device, window_samples, int(model_cfg["in_channels"]))
     logger.info("Smoke batch OK.")
 
     params = list(backbone.parameters()) + list(heads.parameters())
@@ -147,16 +153,24 @@ def main() -> None:
         losses.append(lw)
         return la + lp + lw
 
+    dbg = cfg.get("debug") or {}
+    dbg = dbg if isinstance(dbg, dict) else {}
+    log_gn = bool(dbg.get("log_grad_norm", False))
+    log_sp = bool(dbg.get("log_spike_rate", False))
+
     epochs = int(cfg["epochs"])
     for epoch in range(1, epochs + 1):
         backbone.train()
         heads.train()
         total = 0.0
         n = 0
+        max_gn = 0.0
         for x, _w in train_loader:
             opt.zero_grad(set_to_none=True)
             loss = ssl_step(x)
             loss.backward()
+            if log_gn:
+                max_gn = max(max_gn, backbone_grad_norm_l2(backbone))
             opt.step()
             total += float(loss.detach().cpu())
             n += 1
@@ -176,6 +190,21 @@ def main() -> None:
         curves["val_loss"].append(val_loss)
 
         logger.info("epoch=%d train_loss=%.5f val_loss=%.5f", epoch, train_loss, val_loss)
+        if log_gn:
+            logger.info("epoch=%d backbone_grad_norm_max=%.6f", epoch, max_gn)
+        if log_sp:
+            backbone.train()
+            x0, _ = next(iter(val_loader))
+            x0 = x0.to(device)
+            m = min(2, int(x0.shape[0]))
+            _ = backbone(to_bct(x0[:m]))
+            sm = read_spike_mean_from_snn(backbone)
+            logger.info(
+                "epoch=%d conv_spike_mean_proxy=%s%s",
+                epoch,
+                f"{sm:.6f}" if sm is not None else "n/a",
+                spike_mean_proxy_health_note(sm),
+            )
 
         payload = {
             "epoch": epoch,
