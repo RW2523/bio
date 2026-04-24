@@ -46,21 +46,38 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# PROJECT_ROOT, data, venv
+# PROJECT_ROOT: SLURM_SUBMIT_DIR is the cwd when sbatch was run (Unity: use "cd bio" first).
+# If that fails, use this script's parent dir ONLY when it actually contains train/ (Slurm may
+# execute a spool copy of the script — then script path is NOT under the repo).
 # ---------------------------------------------------------------------------
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_CANDIDATE="$(cd "${_SCRIPT_DIR}/.." && pwd)"
+if [[ -f "${_REPO_CANDIDATE}/train/train_linear_probe_case1.py" ]]; then
+  _REPO_FROM_SCRIPT="${_REPO_CANDIDATE}"
+else
+  _REPO_FROM_SCRIPT=""
+fi
+
 : "${PROJECT_ROOT:=${SLURM_SUBMIT_DIR:-}}"
-if [[ -z "${PROJECT_ROOT}" ]]; then
-  echo "ERROR: PROJECT_ROOT / SLURM_SUBMIT_DIR is empty. cd into the repo, then sbatch cluster/unity_case1_and_case2_full_a100.sh" >&2
+PROJECT_ROOT="${PROJECT_ROOT%/}"
+if [[ ! -f "${PROJECT_ROOT}/train/train_linear_probe_case1.py" ]]; then
+  if [[ -n "${_REPO_FROM_SCRIPT}" ]]; then
+    PROJECT_ROOT="${_REPO_FROM_SCRIPT}"
+  fi
+fi
+PROJECT_ROOT="${PROJECT_ROOT%/}"
+
+if [[ ! -f "${PROJECT_ROOT}/train/train_linear_probe_case1.py" ]] || [[ ! -f "${PROJECT_ROOT}/train/train_linear_probe_case2.py" ]]; then
+  echo "ERROR: Cannot find bio repo root (train scripts missing)." >&2
+  echo "  PROJECT_ROOT=${PROJECT_ROOT:-<empty>}" >&2
+  echo "  SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR:-<empty>}" >&2
+  echo "  Script: ${BASH_SOURCE[0]} (candidate from script: ${_REPO_FROM_SCRIPT:-<none>})" >&2
+  echo "  Fix: cd /path/to/bio && sbatch cluster/unity_case1_and_case2_full_a100.sh" >&2
   exit 1
 fi
 
 DEFAULT_WISDM_DATA_ROOT="$(dirname "${PROJECT_ROOT}")/wisdm-dataset"
 : "${WISDM_DATA_ROOT:=${DEFAULT_WISDM_DATA_ROOT}}"
-
-if [[ ! -f "${PROJECT_ROOT}/train/train_linear_probe_case1.py" ]] || [[ ! -f "${PROJECT_ROOT}/train/train_linear_probe_case2.py" ]]; then
-  echo "ERROR: PROJECT_ROOT must be the bio repository root. Got: ${PROJECT_ROOT}" >&2
-  exit 1
-fi
 
 if [[ ! -d "${WISDM_DATA_ROOT}/raw" ]]; then
   echo "ERROR: WISDM_DATA_ROOT=${WISDM_DATA_ROOT} must contain directory raw/" >&2
@@ -199,15 +216,19 @@ echo "=== Unity full WISDM pipeline ===" | tee -a "${STEP_LOG}"
 echo "RUNTIME_ENV=${RUNTIME_ENV}" | tee -a "${STEP_LOG}"
 echo "STEP_LOG=${STEP_LOG}" | tee -a "${STEP_LOG}"
 
-# Copy Slurm stream files into OUTPUT_ROOT/logs (best effort).
-if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+# Copy Slurm stream files into OUTPUT_ROOT/logs (best effort; re-copy at end for full tail).
+copy_slurm_streams_to_output() {
+  if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+    return 0
+  fi
   for sfx in out err; do
     src="${PROJECT_ROOT}/slurm-unity-full-${SLURM_JOB_ID}.${sfx}"
     if [[ -f "${src}" ]]; then
       cp -a "${src}" "${ABS_OUT}/logs/slurm_stream.${sfx}" || true
     fi
   done
-fi
+}
+copy_slurm_streams_to_output
 
 cd "${PROJECT_ROOT}"
 # shellcheck source=/dev/null
@@ -357,19 +378,20 @@ C1_METRICS="${ABS_OUT}/eval_runs/cluster_case1/metrics.json"
 C2_METRICS="${ABS_OUT}/eval_runs/cluster_case2/metrics.json"
 
 # ---------------------------------------------------------------------------
-# Pipeline (paths relative to repo cwd for tools that expect that)
+# Pipeline (cwd = repo). Use venv Python explicitly (Unity-safe if PATH is odd).
 # ---------------------------------------------------------------------------
+PY="${VENV_ROOT}/bin/python"
 run_step "01_dataset_audit" \
-  python data_tools/inspect_dataset.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
+  "${PY}" data_tools/inspect_dataset.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
 
 run_step "02_build_manifest" \
-  python data_tools/build_manifest.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
+  "${PY}" data_tools/build_manifest.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
 
 run_step "03_preprocess_full" \
-  python data_tools/preprocess_wisdm.py --config preprocess
+  "${PY}" data_tools/preprocess_wisdm.py --config preprocess
 
 run_step "04_ssl_pretrain_20ep" \
-  python train/pretrain_augpred.py --config ssl_20epochs
+  "${PY}" train/pretrain_augpred.py --config ssl_20epochs
 
 if [[ ! -f "${SSL_BB}" ]]; then
   echo "ERROR: Missing SSL checkpoint after step 4: ${SSL_BB}" | tee -a "${STEP_LOG}" >&2
@@ -377,7 +399,7 @@ if [[ ! -f "${SSL_BB}" ]]; then
 fi
 
 run_step "05_case1_linear_probe_100ep" \
-  python train/train_linear_probe_case1.py --config cluster_case1_100ep
+  "${PY}" train/train_linear_probe_case1.py --config cluster_case1_100ep
 
 if [[ ! -f "${C1_CKPT}" ]]; then
   echo "ERROR: Missing Case1 checkpoint: ${C1_CKPT}" | tee -a "${STEP_LOG}" >&2
@@ -385,7 +407,7 @@ if [[ ! -f "${C1_CKPT}" ]]; then
 fi
 
 run_step "06_evaluate_case1" \
-  python eval/evaluate.py \
+  "${PY}" eval/evaluate.py \
     --checkpoint "${C1_CKPT}" \
     --artifacts_dir "${ART_DIR}" \
     --config model \
@@ -397,7 +419,7 @@ if [[ ! -f "${C1_METRICS}" ]]; then
 fi
 
 run_step "07_case2_linear_probe_100ep" \
-  python train/train_linear_probe_case2.py --config cluster_case2_ssl20_100ep
+  "${PY}" train/train_linear_probe_case2.py --config cluster_case2_ssl20_100ep
 
 if [[ ! -f "${C2_CKPT}" ]]; then
   echo "ERROR: Missing Case2 checkpoint: ${C2_CKPT}" | tee -a "${STEP_LOG}" >&2
@@ -405,7 +427,7 @@ if [[ ! -f "${C2_CKPT}" ]]; then
 fi
 
 run_step "08_evaluate_case2" \
-  python eval/evaluate.py \
+  "${PY}" eval/evaluate.py \
     --checkpoint "${C2_CKPT}" \
     --artifacts_dir "${ART_DIR}" \
     --config model \
@@ -418,6 +440,8 @@ fi
 
 END_TS=$(date +%s)
 ELAPSED=$((END_TS - START_TS))
+
+copy_slurm_streams_to_output
 
 echo "" | tee -a "${STEP_LOG}"
 echo "=============================================================================" | tee -a "${STEP_LOG}"
