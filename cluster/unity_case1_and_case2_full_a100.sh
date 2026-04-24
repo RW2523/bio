@@ -21,11 +21,26 @@
 #   - If memory is tight:        sbatch --mem=256G cluster/unity_case1_and_case2_full_a100.sh
 #   - If no A100:               remove #SBATCH --constraint=a100 (or pass overrides)
 #
+# PREEMPTION (Unity / Slurm) — NOT a bug in this script:
+#   - "CANCELLED ... DUE TO PREEMPTION" means the scheduler killed the job for policy/priority reasons.
+#   - "container_p_join / container_g_join ... No such file or directory" often appears as harmless noise
+#     while Slurm tears down the job namespace after preemption or kill.
+#   - Use partition `gpu` (non-preempt) for long work when possible; avoid `gpu-preempt` for >2h runs.
+#   - Do NOT use `--qos=short` for this full pipeline (short QoS is for small <4h boosted jobs; see Unity docs).
+#   - After preemption, resume the SAME output tree and skip finished steps:
+#       export UNITY_REUSE_OUTPUT_ROOT=outputs_unity_full_run_<old_jobid>
+#       sbatch cluster/unity_case1_and_case2_full_a100.sh
+#     (Configs are re-patched for that OUTPUT_ROOT; preprocess/SSL/etc. are skipped if outputs already exist.)
+#
 # BEFORE SUBMIT:
 #   cd /path/to/bio
 #   python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 #   export WISDM_DATA_ROOT=/path/to/wisdm-dataset
 #   sbatch cluster/unity_case1_and_case2_full_a100.sh
+#
+# RESUME after preemption (same artifacts/checkpoints; skips completed steps):
+#   cd /path/to/bio
+#   sbatch --export=ALL,UNITY_REUSE_OUTPUT_ROOT=outputs_unity_full_run_<prior_jobid> cluster/unity_case1_and_case2_full_a100.sh
 #
 # Docs: https://docs.unity.rc.umass.edu/documentation/jobs/sbatch
 # =============================================================================
@@ -39,7 +54,8 @@
 #SBATCH --time=12:00:00
 #SBATCH --gpus=1
 #SBATCH --constraint=a100
-#SBATCH --qos=short
+# Full pipeline: omit --qos=short (short QoS is for small priority-boosted jobs; can confuse long runs).
+# For a one-off interactive boost on a *short* test, add on sbatch line:  --qos=short  (see Unity docs).
 #SBATCH --output=slurm-unity-full-%j.out
 #SBATCH --error=slurm-unity-full-%j.err
 
@@ -95,9 +111,19 @@ if [[ ! -f "${VENV_ROOT}/bin/activate" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Fresh output root (never outputs/ or outputs 2/)
+# Output root (never outputs/ or outputs 2/)
+# Default: outputs_unity_full_run_${SLURM_JOB_ID}
+# Resume after preemption: export UNITY_REUSE_OUTPUT_ROOT=outputs_unity_full_run_<oldid>  then sbatch again.
 # ---------------------------------------------------------------------------
-if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]]; then
+  OUTPUT_ROOT="${UNITY_REUSE_OUTPUT_ROOT}"
+  OUTPUT_ROOT="${OUTPUT_ROOT#/}"
+  OUTPUT_ROOT="${OUTPUT_ROOT%/}"
+  if [[ "${OUTPUT_ROOT}" == *".."* ]] || [[ "${OUTPUT_ROOT}" == /* ]]; then
+    echo "ERROR: UNITY_REUSE_OUTPUT_ROOT must be a repo-relative path without .. (got: ${UNITY_REUSE_OUTPUT_ROOT})" >&2
+    exit 1
+  fi
+elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
   OUTPUT_ROOT="outputs_unity_full_run_${SLURM_JOB_ID}"
 else
   OUTPUT_ROOT="outputs_unity_full_run_local"
@@ -111,6 +137,7 @@ for forbidden in "outputs" "outputs 2"; do
 done
 
 export PROJECT_ROOT WISDM_DATA_ROOT VENV_ROOT OUTPUT_ROOT
+[[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]] && export UNITY_REUSE_OUTPUT_ROOT
 
 ABS_OUT="${PROJECT_ROOT}/${OUTPUT_ROOT}"
 STEP_LOG="${ABS_OUT}/logs/job_steps.log"
@@ -122,7 +149,25 @@ mkdir -p "${ABS_OUT}/audit" "${ABS_OUT}/artifacts" "${ABS_OUT}/logs" \
   "${ABS_OUT}/checkpoints/ssl_ep20" "${ABS_OUT}/checkpoints/cluster_case1" "${ABS_OUT}/checkpoints/cluster_case2" \
   "${ABS_OUT}/eval_runs/cluster_case1" "${ABS_OUT}/eval_runs/cluster_case2"
 
-: >"${STEP_LOG}"
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]]; then
+  echo "" >>"${STEP_LOG}"
+  echo "=== RESUME: reusing OUTPUT_ROOT=${OUTPUT_ROOT} new SLURM_JOB_ID=${SLURM_JOB_ID:-local} ===" | tee -a "${STEP_LOG}"
+else
+  : >"${STEP_LOG}"
+fi
+
+# Log Slurm preemption / SIGTERM (after STEP_LOG exists).
+_unity_log_signal() {
+  local msg="${1:-signal}"
+  echo "$(date -Is) WARNING: ${msg} (if PREEMPTION: export UNITY_REUSE_OUTPUT_ROOT=${OUTPUT_ROOT} and sbatch again)" >>"${STEP_LOG}" 2>/dev/null || true
+  echo "WARNING: ${msg}" >&2
+}
+trap '_unity_log_signal SIGTERM; exit 143' SIGTERM
+trap '_unity_log_signal SIGINT; exit 130' INT
+
+_preprocess_complete() {
+  [[ -f "${ABS_OUT}/artifacts/splits.json" ]] && [[ -f "${ABS_OUT}/artifacts/label_map.json" ]] && [[ -f "${ABS_OUT}/artifacts/norm_stats.json" ]]
+}
 
 # ---------------------------------------------------------------------------
 # run_step: log boundaries; run command with stdout+stderr copied to STEP_LOG
@@ -381,57 +426,85 @@ C2_METRICS="${ABS_OUT}/eval_runs/cluster_case2/metrics.json"
 # Pipeline (cwd = repo). Use venv Python explicitly (Unity-safe if PATH is odd).
 # ---------------------------------------------------------------------------
 PY="${VENV_ROOT}/bin/python"
-run_step "01_dataset_audit" \
-  "${PY}" data_tools/inspect_dataset.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
 
-run_step "02_build_manifest" \
-  "${PY}" data_tools/build_manifest.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
+# Optional skips only when resuming the same OUTPUT_ROOT after preemption (UNITY_REUSE_OUTPUT_ROOT set).
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]] && _preprocess_complete; then
+  echo "=== SKIP: 01_dataset_audit (reuse: artifacts present) ===" | tee -a "${STEP_LOG}"
+  echo "=== SKIP: 02_build_manifest (reuse: artifacts present) ===" | tee -a "${STEP_LOG}"
+  echo "=== SKIP: 03_preprocess_full (reuse: splits/label_map/norm_stats present) ===" | tee -a "${STEP_LOG}"
+else
+  run_step "01_dataset_audit" \
+    "${PY}" data_tools/inspect_dataset.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
 
-run_step "03_preprocess_full" \
-  "${PY}" data_tools/preprocess_wisdm.py --config preprocess
+  run_step "02_build_manifest" \
+    "${PY}" data_tools/build_manifest.py --data_root "${WISDM_DATA_ROOT}" --out_dir "${OUTPUT_ROOT}/audit"
 
-run_step "04_ssl_pretrain_20ep" \
-  "${PY}" train/pretrain_augpred.py --config ssl_20epochs
+  run_step "03_preprocess_full" \
+    "${PY}" data_tools/preprocess_wisdm.py --config preprocess
+fi
+
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]] && [[ -f "${SSL_BB}" ]]; then
+  echo "=== SKIP: 04_ssl_pretrain_20ep (reuse: ${SSL_BB} exists) ===" | tee -a "${STEP_LOG}"
+else
+  run_step "04_ssl_pretrain_20ep" \
+    "${PY}" train/pretrain_augpred.py --config ssl_20epochs
+fi
 
 if [[ ! -f "${SSL_BB}" ]]; then
   echo "ERROR: Missing SSL checkpoint after step 4: ${SSL_BB}" | tee -a "${STEP_LOG}" >&2
   exit 1
 fi
 
-run_step "05_case1_linear_probe_100ep" \
-  "${PY}" train/train_linear_probe_case1.py --config cluster_case1_100ep
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]] && [[ -f "${C1_CKPT}" ]]; then
+  echo "=== SKIP: 05_case1_linear_probe_100ep (reuse: ${C1_CKPT} exists) ===" | tee -a "${STEP_LOG}"
+else
+  run_step "05_case1_linear_probe_100ep" \
+    "${PY}" train/train_linear_probe_case1.py --config cluster_case1_100ep
+fi
 
 if [[ ! -f "${C1_CKPT}" ]]; then
   echo "ERROR: Missing Case1 checkpoint: ${C1_CKPT}" | tee -a "${STEP_LOG}" >&2
   exit 1
 fi
 
-run_step "06_evaluate_case1" \
-  "${PY}" eval/evaluate.py \
-    --checkpoint "${C1_CKPT}" \
-    --artifacts_dir "${ART_DIR}" \
-    --config model \
-    --output_dir "${ABS_OUT}/eval_runs/cluster_case1"
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]] && [[ -f "${C1_METRICS}" ]]; then
+  echo "=== SKIP: 06_evaluate_case1 (reuse: metrics exist) ===" | tee -a "${STEP_LOG}"
+else
+  run_step "06_evaluate_case1" \
+    "${PY}" eval/evaluate.py \
+      --checkpoint "${C1_CKPT}" \
+      --artifacts_dir "${ART_DIR}" \
+      --config model \
+      --output_dir "${ABS_OUT}/eval_runs/cluster_case1"
+fi
 
 if [[ ! -f "${C1_METRICS}" ]]; then
   echo "ERROR: Missing Case1 metrics: ${C1_METRICS}" | tee -a "${STEP_LOG}" >&2
   exit 1
 fi
 
-run_step "07_case2_linear_probe_100ep" \
-  "${PY}" train/train_linear_probe_case2.py --config cluster_case2_ssl20_100ep
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]] && [[ -f "${C2_CKPT}" ]]; then
+  echo "=== SKIP: 07_case2_linear_probe_100ep (reuse: ${C2_CKPT} exists) ===" | tee -a "${STEP_LOG}"
+else
+  run_step "07_case2_linear_probe_100ep" \
+    "${PY}" train/train_linear_probe_case2.py --config cluster_case2_ssl20_100ep
+fi
 
 if [[ ! -f "${C2_CKPT}" ]]; then
   echo "ERROR: Missing Case2 checkpoint: ${C2_CKPT}" | tee -a "${STEP_LOG}" >&2
   exit 1
 fi
 
-run_step "08_evaluate_case2" \
-  "${PY}" eval/evaluate.py \
-    --checkpoint "${C2_CKPT}" \
-    --artifacts_dir "${ART_DIR}" \
-    --config model \
-    --output_dir "${ABS_OUT}/eval_runs/cluster_case2"
+if [[ -n "${UNITY_REUSE_OUTPUT_ROOT:-}" ]] && [[ -f "${C2_METRICS}" ]]; then
+  echo "=== SKIP: 08_evaluate_case2 (reuse: metrics exist) ===" | tee -a "${STEP_LOG}"
+else
+  run_step "08_evaluate_case2" \
+    "${PY}" eval/evaluate.py \
+      --checkpoint "${C2_CKPT}" \
+      --artifacts_dir "${ART_DIR}" \
+      --config model \
+      --output_dir "${ABS_OUT}/eval_runs/cluster_case2"
+fi
 
 if [[ ! -f "${C2_METRICS}" ]]; then
   echo "ERROR: Missing Case2 metrics: ${C2_METRICS}" | tee -a "${STEP_LOG}" >&2
