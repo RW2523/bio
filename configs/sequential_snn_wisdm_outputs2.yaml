@@ -1,0 +1,6 @@
+inherits: "sequential_snn_wisdm"
+
+experiment_name: "sequential_snn_wisdm_outputs2"
+
+# Alternate artifact/cache root (run preprocess with the same output_dir first)
+output_dir: "outputs2"

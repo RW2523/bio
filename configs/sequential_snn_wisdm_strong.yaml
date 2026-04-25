@@ -1,0 +1,46 @@
+inherits: "sequential_snn_wisdm"
+
+experiment_name: "sequential_snn_wisdm_strong"
+
+# Separate checkpoint dir so this run does not overwrite the default sequential_snn weights
+sequential_checkpoint_subdir: "checkpoints/sequential_snn_strong"
+
+# --- Stronger unsupervised phase ---
+stdp_epochs: 5
+stdp:
+  learning_rate: 0.006
+  a_plus: 0.005
+  a_minus: 0.0035
+
+# Slightly more sensitive TR (more spikes → richer reservoir drive); tune if unstable
+tr_encoder:
+  threshold: 0.18
+  threshold_scale: "absolute"
+  encoding: "two_channel"
+
+# Slightly larger reservoir (10×8×8 = 640 neurons)
+reservoir:
+  nx: 10
+  ny: 8
+  nz: 8
+  long_range_edges: 4
+  weight_scale: 0.38
+
+# --- Stronger supervised readout ---
+classifier_mode: "desnn"
+classifier_epochs: 120
+classifier_batch_size: 48
+classifier_lr: 0.0012
+classifier_weight_decay: 0.00015
+classifier_lr_scheduler: "cosine"
+classifier_lr_min_ratio: 0.03
+
+class_balanced_loss: true
+label_smoothing: 0.08
+feature_mixup_alpha: 0.35
+
+desnn_hidden: 160
+desnn_temperature: 0.85
+desnn_dropout: 0.12
+
+num_workers: 6

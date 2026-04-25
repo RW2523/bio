@@ -1,0 +1,21 @@
+inherits: "sequential_snn_wisdm"
+
+experiment_name: "sequential_snn_wisdm_debug"
+
+compute_device: "cpu"
+
+# Tiny reservoir for fast smoke (4^3 = 64)
+reservoir:
+  nx: 4
+  ny: 4
+  nz: 4
+  long_range_edges: 2
+
+stdp_epochs: 1
+classifier_epochs: 3
+classifier_batch_size: 16
+stdp_batch_size: 1
+
+debug_max_train_subjects: 4
+debug_max_val_subjects: 2
+debug_max_batches_per_epoch: 3

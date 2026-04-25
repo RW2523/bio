@@ -92,6 +92,7 @@ Run **in this order** (replace `<path/to/wisdm-dataset>` if your layout differs 
 | Case 1 probe | `python train/train_linear_probe_case1.py --config case1_probe` |
 | Case 2 probe | `python train/train_linear_probe_case2.py --config case2_probe` |
 | Evaluate | `python eval/evaluate.py --checkpoint outputs/checkpoints/case1/best.pt --output_dir outputs/eval_runs/case1` (and same for case2) |
+| Sequential SNN train / eval | `python train/train_wisdm_sequential_snn.py --config sequential_snn_wisdm` then `python eval/evaluate_sequential_snn.py --checkpoint outputs/checkpoints/sequential_snn/best_val_acc.pt --output_dir outputs/eval_runs/sequential_snn_test` |
 
 ---
 
@@ -123,9 +124,10 @@ Typical WISDM tree:
 | `data_tools/` | Audit, manifest, parsers, windowing, normalization, splits, preprocessing, stats reports |
 | `datasets/` | `WISDMSupervisedDataset`, `WISDMSSLDataset`, weighted sampling, collate helpers |
 | `transforms/` | AugPred augmentations + time warp |
-| `models/` | Surrogate spike, LIF over time, spiking ResNet-1D, SSL heads, linear probe |
-| `train/` | `pretrain_augpred.py`, `train_linear_probe_case1.py`, `train_linear_probe_case2.py`, `common.py` |
-| `eval/` | Metrics, confusion matrix figure, `evaluate.py`, `extract_features.py`, `visualize_embeddings.py` |
+| `models/` | Surrogate spike, LIF over time, spiking ResNet-1D, SSL heads, linear probe; **sequential** TR encoder, reservoir, STDP, deSNN-style head |
+| `train/` | `pretrain_augpred.py`, `train_linear_probe_case1.py`, `train_linear_probe_case2.py`, `train_wisdm_sequential_snn.py`, `common.py` |
+| `eval/` | Metrics, confusion matrix figure, `evaluate.py`, `evaluate_sequential_snn.py`, `analyze_sequential_snn.py`, `extract_features.py`, `visualize_embeddings.py` |
+| `sbatch/` | Example Slurm driver for the sequential SNN path (`run_wisdm_sequential_snn.sbatch`) |
 | `verify/` | `smoke_e2e.py` — static + small tensor checks before long runs |
 | `utils/` | Seeds, logging, checkpoints, YAML merge, assertions |
 
@@ -158,6 +160,42 @@ python eval/visualize_embeddings.py \
   --output outputs/features/embedding_2d.png \
   --method umap
 ```
+
+---
+
+## Sequential reservoir SNN (WISDM) — parallel experiment path
+
+This is a **separate** WISDM pipeline from the **1D spiking ResNet + ZCSF/identity encoder** stack in `train/snn_common.py` / `train/train_linear_probe_case1.py`. It does **not** replace or modify that path.
+
+**Idea (high level):** continuous windows are converted to spike trains with a **threshold-based representation (TR)** on per-channel temporal differences; spikes are streamed into a **compact 3D-grid reservoir** with distance-biased (“small-world–style”) recurrence; **pair-based STDP** updates feedforward and recurrent weights on **train subjects only**; the reservoir is then **frozen**, and a **supervised readout** (`desnn` prototype head or a **linear probe** on mean firing rates) is trained with AdamW. **Subject-wise splits, window cache, and train-only normalization** are the same as the rest of the repo (`data_tools/preprocess_wisdm.py`, `datasets/wisdm_supervised_dataset.py`).
+
+**Faithful vs approximate (vs NeuCube / deSNN literature):** TR encoding and the **ordering** (unsupervised reservoir → frozen → supervised readout) follow the paper’s methodology at a high level. The reservoir is a **practical PyTorch substitute** for NeuCube (fixed small 3D grid, Chebyshev-local + random long-range mask, LIF dynamics, dense STDP on masked weights). The readout is a **simplified deSNN-style** prototype classifier (learned class prototypes with negative squared distance), or an optional linear probe — not the full rank-order deSNN machinery.
+
+**Run locally (after preprocess):**
+
+```bash
+# small CPU smoke (few subjects / few batches)
+python train/train_wisdm_sequential_snn.py --config sequential_snn_wisdm_debug
+
+# full-style settings (GPU recommended)
+python train/train_wisdm_sequential_snn.py --config sequential_snn_wisdm
+
+# higher-budget recipe: class-balanced loss, cosine LR, feature mixup on reservoir rates,
+# dropout in the deSNN MLP, more STDP/classifier epochs, larger reservoir (see YAML)
+python train/train_wisdm_sequential_snn.py --config sequential_snn_wisdm_strong
+
+python eval/evaluate_sequential_snn.py \
+  --checkpoint outputs/checkpoints/sequential_snn/best_val_acc.pt \
+  --output_dir outputs/eval_runs/sequential_snn_test
+
+python eval/analyze_sequential_snn.py \
+  --checkpoint outputs/checkpoints/sequential_snn/best_val_acc.pt \
+  --output_dir outputs/eval_runs/sequential_snn_analysis
+```
+
+**Alternate artifact root:** `configs/sequential_snn_wisdm_outputs2.yaml` sets `output_dir: "outputs2"` (run preprocessing with the same `output_dir` first).
+
+**Slurm:** `sbatch/run_wisdm_sequential_snn.sbatch` uses the same Unity-style resource block as full GPU jobs, with fixed `#SBATCH --time=04:00:00` and `#SBATCH --constraint=a100` (change account/partition/mem only if your site requires it). Submit from repo root with `WISDM_DATA_ROOT` and optional `SEQUENTIAL_CONFIG` / `SEQUENTIAL_CHECKPOINT` exported.
 
 ---
 

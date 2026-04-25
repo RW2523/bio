@@ -1,0 +1,60 @@
+inherits: ["data.yaml", "preprocess.yaml"]
+
+experiment_name: "sequential_snn_wisdm"
+
+# Same layout as other experiments: artifacts + window cache under output_dir
+compute_device: "cuda"
+seed: 42
+reservoir_seed: 42
+num_workers: 4
+
+# Accelerometer-only default; if future caches have 6 channels (accel+gyro), set true to use all six
+use_gyro: false
+
+sequential_checkpoint_subdir: "checkpoints/sequential_snn"
+
+# TR spike encoder (threshold-based representation)
+tr_encoder:
+  threshold: 0.25
+  threshold_scale: "absolute" # or "per_channel_std"
+  encoding: "two_channel" # pos/neg binary per channel → F_in = 2 * C
+
+# 3D reservoir (medium research default: 8^3 = 512 neurons)
+reservoir:
+  nx: 8
+  ny: 8
+  nz: 8
+  lif_beta: 0.9
+  lif_threshold: 1.0
+  cheb_radius: 1
+  long_range_edges: 3
+  weight_scale: 0.35
+
+stdp:
+  tau_plus: 20.0
+  tau_minus: 20.0
+  a_plus: 0.004
+  a_minus: 0.003
+  w_min: 0.0
+  w_max: 1.0
+  learning_rate: 0.008
+
+# Unsupervised passes over the training set (online STDP updates)
+stdp_epochs: 2
+stdp_batch_size: 1
+
+# Supervised readout after reservoir is frozen
+classifier_mode: "desnn" # or "linear_probe_on_reservoir_features"
+classifier_epochs: 50
+classifier_batch_size: 64
+classifier_lr: 0.001
+classifier_weight_decay: 0.0001
+label_smoothing: 0.05
+desnn_hidden: 64
+desnn_temperature: 1.0
+probe_embedding_batchnorm: false
+
+# Debug / smoke toggles (set to null for full runs)
+debug_max_train_subjects: null
+debug_max_val_subjects: null
+debug_max_batches_per_epoch: null
